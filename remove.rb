@@ -4,6 +4,7 @@ require_relative 'filetools'
 
 begin
 	puts 'FileDB Remove tool v0.0.1'
+    puts 'DEPRECATED!'
 	db = init_db
 
 	removed = 0

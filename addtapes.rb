@@ -5,8 +5,15 @@ require_relative 'filetools'
 $state = State.new('add tapes tool')
 
 def args_valid
-    # TODO: implement proper validation of command line arguments.
-    true
+    valid = true
+    ARGV.each do |label|
+        label_valid = valid_tape_label(label)
+        unless label_valid
+            puts "Invalid label supplied on command line: #{label}."
+        end
+        valid = label_valid && valid
+    end
+    valid
 end
 
 def tape_size(label)

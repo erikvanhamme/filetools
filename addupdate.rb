@@ -24,6 +24,7 @@ dirs = validate_args(ARGV)
 
 begin
 	puts 'FileDB Add/Update tool v0.0.1'
+    puts 'DEPRECATED!'
 	db = init_db
 
 	added = 0

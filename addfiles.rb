@@ -7,8 +7,15 @@ require_relative 'filetools'
 $state = State.new('add files tool')
 
 def args_valid
-    # TODO: implement proper validation of command line arguments.
-    true
+    valid = true
+    ARGV.each do |directory|
+        directory_valid = valid_directory(directory)
+        unless directory_valid
+            puts "Invalid directory supplied on command line: #{directory}."
+        end
+        valid = directory_valid && valid
+    end
+    valid
 end
 
 begin

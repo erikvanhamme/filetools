@@ -159,9 +159,15 @@ def sha1_file(absolute_path)
     sha1.hexdigest.to_i(16)
 end
 
+def valid_tape_label(label)
+    # TODO: Implement properly.
+    return true
+end
 
-
-
+def valid_directory(directory)
+    # TODO: Implement properly.
+    return true
+end
 
 
 
