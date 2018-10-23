@@ -1,3 +1,4 @@
+require 'digest/sha1'
 require 'sqlite3'
 
 def init_db
@@ -148,6 +149,15 @@ def init
     puts '  ' + db.get_first_value('SELECT COUNT(*) FROM file_tape_links').to_s + ' file <-> tape links in database.'
 end
 
+def sha1_file(absolute_path)
+    sha1 = Digest::SHA1.new()
+    File.open(absolute_path, 'rb') do |iostream|
+        while (block = iostream.read(4096)) && block.length > 0
+            sha1.update(block)
+        end
+    end
+    sha1.hexdigest.to_i(16)
+end
 
 
 
