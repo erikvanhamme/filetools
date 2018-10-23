@@ -11,7 +11,13 @@ def validate_args(args)
 end
 
 def hash_path(absolute_path)
-	Digest::SHA1.hexdigest(File.open(absolute_path, 'rb') { |file| file.read }).to_i(16)
+    sha1 = Digest::SHA1.new()
+    File.open(absolute_path, 'rb') do |iostream|
+        while (block = iostream.read(4096)) && block.length > 0
+            sha1.update(block)
+        end
+    end
+    sha1.hexdigest.to_i(16)
 end
 
 dirs = validate_args(ARGV)
