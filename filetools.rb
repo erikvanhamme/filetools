@@ -1,6 +1,9 @@
 require 'digest/sha1'
 require 'sqlite3'
 
+# TODO: split file in the following modules: tool, db, file, tape
+
+#tool
 class State
     attr_accessor :db, :version, :db_version, :tool, :verbose, :quiet, :argv, \
                     :incompatible, :files_added, :files_updated, :files_removed, \
@@ -21,6 +24,7 @@ class State
     end
 end
 
+#db
 def is_db_empty
     db = $state.db
 
@@ -29,6 +33,7 @@ def is_db_empty
     version_table.length == 0
 end
 
+#db
 def create_version_table
     db = $state.db
 
@@ -37,6 +42,7 @@ def create_version_table
     db.execute("INSERT INTO version(version, db_version) VALUES(#{$state.version}, #{$state.db_version})")
 end
 
+#db
 def create_files_table
     db = $state.db
     
@@ -48,6 +54,7 @@ def create_files_table
 	db.execute 'CREATE INDEX IF NOT EXISTS files_path ON files(path)'
 end
 
+#db
 def create_tapes_table
     db = $state.db
     
@@ -55,6 +62,7 @@ def create_tapes_table
         label TEXT, size INTEGER, tapeset INTEGER, tapeset_idx INTEGER)'
 end
 
+#db
 def create_tapesets_table
     db = $state.db
     
@@ -62,6 +70,7 @@ def create_tapesets_table
         name TEXT, tape_count INTEGER)'
 end
 
+#db
 def create_file_tape_links_table
     db = $state.db
     
@@ -69,6 +78,7 @@ def create_file_tape_links_table
         tape_number INTEGER)'
 end
 
+#db
 def create_db_schema
     unless $state.quiet
         puts 'Initializing new database.'
@@ -80,6 +90,7 @@ def create_db_schema
     create_file_tape_links_table
 end
 
+#db
 def increment_db_schema(current)
     db = $state.db
 
@@ -100,6 +111,7 @@ def increment_db_schema(current)
     current
 end
 
+#db
 def update_db_schema
     db = $state.db
     
@@ -116,6 +128,7 @@ def update_db_schema
     end
 end
 
+#db
 def check_db_schema
     db = $state.db
     
@@ -132,6 +145,7 @@ def check_db_schema
     update_db_schema
 end
 
+#tool
 def scan_args
     ARGV.each do |arg|
         case arg
@@ -148,6 +162,7 @@ def scan_args
     end
 end
 
+#tool
 def init
     scan_args
 
@@ -175,6 +190,7 @@ def init
     end
 end
 
+#file
 def sha1_file(absolute_path)
     sha1 = Digest::SHA1.new()
     File.open(absolute_path, 'rb') do |iostream|
@@ -185,6 +201,7 @@ def sha1_file(absolute_path)
     sha1.hexdigest
 end
 
+#tape
 def valid_tape_label(label)
     if label.length != 8
         return false
@@ -196,10 +213,12 @@ def valid_tape_label(label)
     return label =~ /[A-Z0-9]{6}[L]{1}[1-8]{1}/
 end
 
+#file
 def valid_directory(directory)
     return File.directory?(directory)
 end
 
+#file
 def directory_args_valid
     valid = true
     $state.argv.each do |directory|
@@ -212,6 +231,7 @@ def directory_args_valid
     valid
 end
 
+#tape
 def tape_args_valid
     valid = true
     $state.argv.each do |label|
@@ -224,6 +244,7 @@ def tape_args_valid
     valid
 end
 
+#tape
 def tape_size(label)
     size = 0
     suffix = label.split(//).last(2).join
@@ -234,18 +255,21 @@ def tape_size(label)
     size
 end
 
+#file
 def file_exists(file)
     if $state.verbose
         puts "File record for #{file} exists."
     end
 end
 
+#file
 def file_doesnt_exist(file)
     unless $state.quiet
         puts "File record for #{file} does not exist."
     end
 end
 
+#file
 def file_added(file)
     $state.files_added += 1
     if $state.verbose
@@ -253,6 +277,7 @@ def file_added(file)
     end
 end
 
+#file
 def file_removed(file)
     $state.files_removed += 1
     if $state.verbose
@@ -260,6 +285,7 @@ def file_removed(file)
     end
 end
 
+#file
 def file_updated(file)
     $state.files_updated += 1
     if $state.verbose
@@ -267,12 +293,14 @@ def file_updated(file)
     end
 end
 
+#tape
 def tape_exists(label)
     if $state.verbose
         puts "Tape record for #{label} exists."
     end
 end
 
+#tape
 def tape_added(label)
     $state.tapes_added += 1
     if $state.verbose
@@ -280,6 +308,7 @@ def tape_added(label)
     end
 end
 
+#tool
 def report
     unless $state.quiet
         puts 'Report:'
@@ -305,3 +334,4 @@ def report
         end
     end
 end
+
