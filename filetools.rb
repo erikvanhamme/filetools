@@ -38,7 +38,7 @@ def init_db
 end
 
 class State
-    attr_accessor :db, :version, :db_version, :tool, :verbose, :quiet, :argv
+    attr_accessor :db, :version, :db_version, :tool, :verbose, :quiet, :argv, :incompatible
 
     def initialize(tool)
         @version = 1
@@ -47,6 +47,7 @@ class State
         @verbose = false
         @quiet = false
         @argv = []
+        @incompatible = false
     end
 end
 
@@ -70,7 +71,8 @@ def create_files_table
     db = $state.db
     
 	db.execute 'CREATE TABLE IF NOT EXISTS files(number INTEGER PRIMARY KEY, 
-        sha1 INTEGER, size INTEGER, mtime INTEGER, path TEXT, latest INTEGER)'
+        sha1 INTEGER, size INTEGER, mtime INTEGER, path TEXT, latest INTEGER,
+        deleted INTEGER)'
 
 	db.execute 'CREATE INDEX IF NOT EXISTS files_sha1 ON files(sha1)'
 	db.execute 'CREATE INDEX IF NOT EXISTS files_path ON files(path)'
@@ -109,6 +111,8 @@ def create_db_schema
 end
 
 def increment_db_schema(current)
+    db = $state.db
+
     unless $state.quiet
         puts "Updating database schema from V#{current}."
     end
@@ -120,6 +124,9 @@ def increment_db_schema(current)
         # TODO: Handle schema update from V2 to V3 here.
     end
     current += 1
+
+    db.execute("UPDATE version SET db_version=#{current}")
+
     current
 end
 
@@ -137,6 +144,22 @@ def update_db_schema
     while(db_version_in_db < $state.db_version)
         db_version_in_db = increment_db_schema(db_version_in_db)
     end
+end
+
+def check_db_schema
+    db = $state.db
+    
+    versions = db.execute('SELECT * FROM version')
+    version_in_db = versions[0][0]
+    db_version_in_db = versions[0][1]
+
+    if (version_in_db > $state.version) || (db_version_in_db > $state.db_version)
+        puts 'Error: Database was created with higher code or database version of the tools.'
+        $state.incompatible = true
+        return
+    end
+    
+    update_db_schema
 end
 
 def scan_args
@@ -159,7 +182,7 @@ def init
     scan_args
 
     unless $state.quiet
-        puts "FileTools: #{$state.tool} version: #{$state.version} db_version: #{$state.db_version}"
+        puts "FileTools: #{$state.tool} (code version: #{$state.version} using db_version: #{$state.db_version})"
     end
     db = SQLite3::Database.new "filetools.db"
     $state.db = db
@@ -167,7 +190,11 @@ def init
     if is_db_empty
         create_db_schema
     else
-        update_db_schema
+        check_db_schema
+    end
+
+    if $state.incompatible
+        exit -1
     end
 
     unless $state.quiet

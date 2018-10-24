@@ -36,7 +36,7 @@ begin
                     if present_in_db == 0
     					sha1_num = sha1_file(absolute_path)
     
-    					db.execute("INSERT INTO files (sha1, size, mtime, path, latest) VALUES (#{sha1_num.to_s}, #{filesize}, #{mtime.to_i}, \"#{absolute_path}\", 1)")
+    					db.execute("INSERT INTO files (sha1, size, mtime, path, latest, deleted) VALUES (#{sha1_num.to_s}, #{filesize}, #{mtime.to_i}, \"#{absolute_path}\", 1, 0)")
 
                         if $state.verbose
                             puts "Added file #{absolute_path} to the database."
