@@ -38,12 +38,15 @@ def init_db
 end
 
 class State
-    attr_accessor :db, :version, :db_version, :tool
+    attr_accessor :db, :version, :db_version, :tool, :verbose, :quiet, :argv
 
     def initialize(tool)
         @version = 1
         @db_version = 1
         @tool = tool
+        @verbose = false
+        @quiet = false
+        @argv = []
     end
 end
 
@@ -95,7 +98,9 @@ def create_file_tape_links_table
 end
 
 def create_db_schema
-    puts 'Initializing new database.'
+    unless $state.quiet
+        puts 'Initializing new database.'
+    end
     create_version_table
     create_files_table
     create_tapes_table
@@ -104,7 +109,9 @@ def create_db_schema
 end
 
 def increment_db_schema(current)
-    puts "Updating database schema from V#{current}."
+    unless $state.quiet
+        puts "Updating database schema from V#{current}."
+    end
 
     if current == 1
         # TODO: Handle schema update from V1 to V2 here.
@@ -132,8 +139,28 @@ def update_db_schema
     end
 end
 
+def scan_args
+    ARGV.each do |arg|
+        case arg
+        when '-v'
+            $state.verbose = true
+        when '-q'
+            $state.quiet = true
+        else
+            $state.argv << arg
+        end
+        if $state.quiet
+            $state.verbose = false
+        end
+    end
+end
+
 def init
-    puts "FileTools: #{$state.tool} version: #{$state.version} db_version: #{$state.db_version}"
+    scan_args
+
+    unless $state.quiet
+        puts "FileTools: #{$state.tool} version: #{$state.version} db_version: #{$state.db_version}"
+    end
     db = SQLite3::Database.new "filetools.db"
     $state.db = db
     
@@ -143,10 +170,12 @@ def init
         update_db_schema
     end
 
-	puts '  ' + db.get_first_value('SELECT COUNT(*) FROM files').to_s + ' files in database.'
-    puts '  ' + db.get_first_value('SELECT COUNT(*) FROM tapes').to_s + ' tapes in database.'
-    puts '  ' + db.get_first_value('SELECT COUNT(*) FROM tapesets').to_s + ' tape sets in database.'
-    puts '  ' + db.get_first_value('SELECT COUNT(*) FROM file_tape_links').to_s + ' file <-> tape links in database.'
+    unless $state.quiet
+        puts '  ' + db.get_first_value('SELECT COUNT(*) FROM files').to_s + ' files in database.'
+        puts '  ' + db.get_first_value('SELECT COUNT(*) FROM tapes').to_s + ' tapes in database.'
+        puts '  ' + db.get_first_value('SELECT COUNT(*) FROM tapesets').to_s + ' tape sets in database.'
+        puts '  ' + db.get_first_value('SELECT COUNT(*) FROM file_tape_links').to_s + ' file <-> tape links in database.'
+    end
 end
 
 def sha1_file(absolute_path)

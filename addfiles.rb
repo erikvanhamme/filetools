@@ -8,7 +8,7 @@ $state = State.new('add files tool')
 
 def args_valid
     valid = true
-    ARGV.each do |directory|
+    $state.argv.each do |directory|
         directory_valid = valid_directory(directory)
         unless directory_valid
             puts "Invalid directory supplied on command line: #{directory}."
@@ -25,7 +25,7 @@ begin
     added = 0
 
     if args_valid
-	    ARGV.each do |dir|
+	    $state.argv.each do |dir|
 		    Find.find(dir) do |path|
 			    if File.file?(path)
 				    absolute_path = File.expand_path(path)
@@ -38,6 +38,10 @@ begin
     
     					db.execute("INSERT INTO files (sha1, size, mtime, path, latest) VALUES (#{sha1_num.to_s}, #{filesize}, #{mtime.to_i}, \"#{absolute_path}\", 1)")
 
+                        if $state.verbose
+                            puts "Added file #{absolute_path} to the database."
+                        end
+
                         added += 1
                     end
                 end
@@ -45,8 +49,10 @@ begin
         end
     end
 
-	puts 'Report:'
-    puts "  #{added} files were added to the database."
+    unless $state.quiet
+    	puts 'Report:'
+        puts "  #{added} files were added to the database."
+    end
 rescue SQLite3::Exception => e 
     puts "Database exception occurred:"
     puts e

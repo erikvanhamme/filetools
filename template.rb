@@ -8,7 +8,9 @@ begin
 	init
     db = $state.db
 
-	puts 'Report:'
+    unless $state.quiet
+    	puts 'Report:'
+    end
 rescue SQLite3::Exception => e 
     puts "Database exception occurred:"
     puts e
