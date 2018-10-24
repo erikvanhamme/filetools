@@ -10,9 +10,6 @@ begin
 	init
     db = $state.db
 
-    updated = 0
-    added = 0
-
     if directory_args_valid
 	    $state.argv.each do |dir|
 		    Find.find(dir) do |path|
@@ -23,7 +20,7 @@ begin
 
                     files = db.execute("SELECT * FROM files WHERE path=\"#{absolute_path}\" AND latest=1 AND deleted=0")
                     if files.length == 0
-                        msg_file_doesnt_exist(absolute_path)
+                        file_doesnt_exist(absolute_path)
                     elsif files.length == 1
                         file = files[0]
 
@@ -35,12 +32,10 @@ begin
                             if on_tapes != 0
                                 db.execute("UPDATE files SET latest=0 WHERE number=#{file_num}")
                                 db.execute("INSERT INTO files (sha1, size, mtime, path, latest, deleted) VALUES (\"#{sha1}\", #{filesize}, #{mtime.to_i}, \"#{absolute_path}\", 1, 0)")
-                                msg_file_added(absolute_path)
-                                added += 1
+                                file_added(absolute_path)
                             else
                                 db.execute("UPDATE files SET sha1=\"#{sha1}\", size=#{filesize}, mtime=#{mtime.to_i} WHERE number=#{file_num}")
-                                msg_file_updated(absolute_path)
-                                updated += 1
+                                file_updated(absolute_path)
                             end
                         end
                     else
@@ -51,11 +46,7 @@ begin
         end
     end
 
-    unless $state.quiet
-    	puts 'Report:'
-        puts "  #{added} file records were added to the database."
-        puts "  #{updated} file records were updated in the database."
-    end
+    report
 rescue SQLite3::Exception => e 
     puts "Database exception occurred:"
     puts e

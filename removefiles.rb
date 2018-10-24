@@ -10,9 +10,6 @@ begin
 	init
     db = $state.db
 
-    updated = 0
-    removed = 0
-
     if directory_args_valid
 	    $state.argv.each do |dir|
 		    Find.find(dir) do |path|
@@ -21,7 +18,7 @@ begin
 
                     files = db.execute("SELECT * FROM files WHERE path=\"#{absolute_path}\" AND latest=1 AND deleted=0")
                     if files.length == 0
-                        msg_file_doesnt_exist(absolute_path)
+                        file_doesnt_exist(absolute_path)
                     elsif files.length == 1
                         file = files[0]
 
@@ -30,15 +27,10 @@ begin
 
                         if on_tapes != 0
                             db.execute("UPDATE files SET latest=0, deleted=1 WHERE number=#{file_num}")
-                            msg_file_updated(absolute_file)
-                            updated += 1
+                            file_updated(absolute_path)
                         else
                             db.execute("DELETE FROM files WHERE number=#{file_num}")
-                            if $state.verbose
-                                puts "Removed file record for #{absolute_path}."
-                            end
-                            msg_file_removed(absolute_file)
-                            removed += 1
+                            file_removed(absolute_path)
                         end
                     else
                         puts "Error: #{absolute_path} appears multiple times as latest file in database."
@@ -48,11 +40,7 @@ begin
         end
     end
 
-    unless $state.quiet
-    	puts 'Report:'
-        puts "  #{removed} file records were removed from the database."
-        puts "  #{updated} file records were updated in the database."
-    end
+    report
 rescue SQLite3::Exception => e 
     puts "Database exception occurred:"
     puts e
