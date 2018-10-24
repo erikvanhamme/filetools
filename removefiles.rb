@@ -21,9 +21,7 @@ begin
 
                     files = db.execute("SELECT * FROM files WHERE path=\"#{absolute_path}\" AND latest=1 AND deleted=0")
                     if files.length == 0
-                        unless $state.quiet
-                            puts "#{absolute_path} is not in the database."
-                        end
+                        msg_file_doesnt_exist(absolute_path)
                     elsif files.length == 1
                         file = files[0]
 
@@ -32,15 +30,14 @@ begin
 
                         if on_tapes != 0
                             db.execute("UPDATE files SET latest=0, deleted=1 WHERE number=#{file_num}")
-                            if $state.verbose
-                                puts "Updated file record for #{absolute_path}."
-                            end
+                            msg_file_updated(absolute_file)
                             updated += 1
                         else
                             db.execute("DELETE FROM files WHERE number=#{file_num}")
                             if $state.verbose
                                 puts "Removed file record for #{absolute_path}."
                             end
+                            msg_file_removed(absolute_file)
                             removed += 1
                         end
                     else

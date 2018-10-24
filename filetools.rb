@@ -242,3 +242,33 @@ def directory_args_valid
     valid
 end
 
+def msg_file_exists(file)
+    if $state.verbose
+        puts "File record for #{file} exists."
+    end
+end
+
+def msg_file_doesnt_exist(file)
+    unless $state.quiet
+        puts "File record for #{file} does not exist."
+    end
+end
+
+def msg_file_added(file)
+    if $state.verbose
+        puts "File record for #{file} added."
+    end
+end
+
+def msg_file_removed(file)
+    if $state.verbose
+        puts "File record for #{file} removed."
+    end
+end
+
+def msg_file_updated(file)
+    if $state.verbose
+        puts "File record for #{file} updated."
+    end
+end
+

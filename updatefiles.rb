@@ -23,9 +23,7 @@ begin
 
                     files = db.execute("SELECT * FROM files WHERE path=\"#{absolute_path}\" AND latest=1 AND deleted=0")
                     if files.length == 0
-                        unless $state.quiet
-                            puts "#{absolute_path} is not in the database."
-                        end
+                        msg_file_doesnt_exist(absolute_path)
                     elsif files.length == 1
                         file = files[0]
 
@@ -37,15 +35,11 @@ begin
                             if on_tapes != 0
                                 db.execute("UPDATE files SET latest=0 WHERE number=#{file_num}")
                                 db.execute("INSERT INTO files (sha1, size, mtime, path, latest, deleted) VALUES (\"#{sha1}\", #{filesize}, #{mtime.to_i}, \"#{absolute_path}\", 1, 0)")
-                                if $state.verbose
-                                    puts "Added new file record for #{absolute_path}."
-                                end
+                                msg_file_added(absolute_path)
                                 added += 1
                             else
                                 db.execute("UPDATE files SET sha1=\"#{sha1}\", size=#{filesize}, mtime=#{mtime.to_i} WHERE number=#{file_num}")
-                                if $state.verbose
-                                    puts "Updated file record for #{absolute_path}."
-                                end
+                                msg_file_updated(absolute_path)
                                 updated += 1
                             end
                         end

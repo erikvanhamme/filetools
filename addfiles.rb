@@ -20,17 +20,16 @@ begin
 				    filesize = File.size(absolute_path)
 				    mtime = File.mtime(absolute_path)
 
-                    present_in_db = db.get_first_value("SELECT COUNT(*) FROM files WHERE path=\"#{absolute_path}\" AND size=#{filesize} AND mtime=#{mtime.to_i}").to_i
+                    present_in_db = db.get_first_value("SELECT COUNT(*) FROM files WHERE path=\"#{absolute_path}\" AND deleted=0").to_i
                     if present_in_db == 0
     					sha1 = sha1_file(absolute_path)
     
     					db.execute("INSERT INTO files (sha1, size, mtime, path, latest, deleted) VALUES (\"#{sha1}\", #{filesize}, #{mtime.to_i}, \"#{absolute_path}\", 1, 0)")
 
-                        if $state.verbose
-                            puts "Added file #{absolute_path} to the database."
-                        end
-
+                        msg_file_added(absolute_path)
                         added += 1
+                    else
+                        msg_file_exists(absolute_path)
                     end
                 end
             end
