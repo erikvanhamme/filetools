@@ -160,13 +160,18 @@ def sha1_file(absolute_path)
 end
 
 def valid_tape_label(label)
-    # TODO: Implement properly.
-    return true
+    if label.length != 8
+        return false
+    end
+
+    # Taken LTO tape label spec from:
+    # https://www.ibm.com/support/knowledgecenter/en/STCMML8/com.ibm.storage.ts3500.doc/ipg_3584_mehlab.html
+    # Only supporting LTO1-LTO8 for now.
+    return label =~ /[A-Z0-9]{6}[L]{1}[1-8]{1}/
 end
 
 def valid_directory(directory)
-    # TODO: Implement properly.
-    return true
+    return File.directory?(directory)
 end
 
 
