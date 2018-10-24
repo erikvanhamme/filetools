@@ -71,7 +71,7 @@ def create_files_table
     db = $state.db
     
 	db.execute 'CREATE TABLE IF NOT EXISTS files(number INTEGER PRIMARY KEY, 
-        sha1 INTEGER, size INTEGER, mtime INTEGER, path TEXT, latest INTEGER,
+        sha1 TEXT, size INTEGER, mtime INTEGER, path TEXT, latest INTEGER,
         deleted INTEGER)'
 
 	db.execute 'CREATE INDEX IF NOT EXISTS files_sha1 ON files(sha1)'
@@ -198,10 +198,10 @@ def init
     end
 
     unless $state.quiet
-        puts '  ' + db.get_first_value('SELECT COUNT(*) FROM files').to_s + ' files in database.'
-        puts '  ' + db.get_first_value('SELECT COUNT(*) FROM tapes').to_s + ' tapes in database.'
-        puts '  ' + db.get_first_value('SELECT COUNT(*) FROM tapesets').to_s + ' tape sets in database.'
-        puts '  ' + db.get_first_value('SELECT COUNT(*) FROM file_tape_links').to_s + ' file <-> tape links in database.'
+        puts '  ' + db.get_first_value('SELECT COUNT(*) FROM files').to_s + ' file records in database.'
+        puts '  ' + db.get_first_value('SELECT COUNT(*) FROM tapes').to_s + ' tape records in database.'
+        puts '  ' + db.get_first_value('SELECT COUNT(*) FROM tapesets').to_s + ' tape set records in database.'
+        puts '  ' + db.get_first_value('SELECT COUNT(*) FROM file_tape_links').to_s + ' file <-> tape link records in database.'
     end
 end
 
@@ -212,7 +212,7 @@ def sha1_file(absolute_path)
             sha1.update(block)
         end
     end
-    sha1.hexdigest.to_i(16)
+    sha1.hexdigest
 end
 
 def valid_tape_label(label)
@@ -230,18 +230,15 @@ def valid_directory(directory)
     return File.directory?(directory)
 end
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+def directory_args_valid
+    valid = true
+    $state.argv.each do |directory|
+        directory_valid = valid_directory(directory)
+        unless directory_valid
+            puts "Invalid directory supplied on command line: #{directory}."
+        end
+        valid = directory_valid && valid
+    end
+    valid
+end
 

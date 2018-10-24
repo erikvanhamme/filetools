@@ -53,7 +53,7 @@ begin
 
     unless $state.quiet
         puts 'Report:'
-        puts "  #{added} tapes were added to the database."
+        puts "  #{added} tape records were added to the database."
     end
 rescue SQLite3::Exception => e 
     puts "Database exception occurred:"
