@@ -2,7 +2,8 @@
 
 require 'find'
 
-require_relative 'filetools'
+require_relative 'file'
+require_relative 'tool'
 
 $state = State.new('add files tool')
 

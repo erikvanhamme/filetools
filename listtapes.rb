@@ -1,6 +1,7 @@
 #!/usr/bin/ruby
 
-require_relative 'filetools'
+require_relative 'tape'
+require_relative 'tool'
 
 $state = State.new('list tapes tool')
 
