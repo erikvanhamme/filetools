@@ -1,18 +1,11 @@
 #!/usr/bin/ruby
 
-require_relative 'filetools'
+require_relative 'tool'
 
-$state = State.new('template')
-
-begin
-	init
-    db = $state.db
-
-    report
-rescue SQLite3::Exception => e 
-    puts "Database exception occurred:"
-    puts e
-ensure
-    db = $state.db
-    db.close if db
+def tool_run(state, db)
+    # TODO: Add tool behaviour here.
 end
+
+# TODO: Change tool name.
+tool_new('template')
+

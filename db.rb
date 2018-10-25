@@ -125,4 +125,3 @@ def check_db_schema
     update_db_schema
 end
 
-

@@ -20,6 +20,24 @@ class State
     end
 end
 
+def tool_new(tool_name, show_report = true)
+    $state = State.new(tool_name)
+    begin
+        init
+        tool_run($state, $state.db)
+
+        if show_report
+            report
+        end
+    rescue SQLite3::Exception => e 
+        puts "Database exception occurred:"
+        puts e
+    ensure
+        db = $state.db
+        db.close if db
+    end
+end
+
 def scan_args
     ARGV.each do |arg|
         case arg

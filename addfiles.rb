@@ -5,14 +5,9 @@ require 'find'
 require_relative 'file'
 require_relative 'tool'
 
-$state = State.new('add files tool')
-
-begin
-	init
-    db = $state.db
-
-    if directory_args_valid
-	    $state.argv.each do |dir|
+def tool_run(state, db)
+    if directory_args_valid()
+	    state.argv.each() do |dir|
 		    Find.find(dir) do |path|
 			    if File.file?(path)
 				    absolute_path = File.expand_path(path)
@@ -31,12 +26,7 @@ begin
             end
         end
     end
-
-    report
-rescue SQLite3::Exception => e 
-    puts "Database exception occurred:"
-    puts e
-ensure
-    db = $state.db
-    db.close if db
 end
+
+tool_new('add files tool')
+
