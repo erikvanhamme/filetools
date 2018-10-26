@@ -14,12 +14,12 @@ def valid_directory(directory)
     return File.directory?(directory)
 end
 
-def directory_args_valid
+def directory_args_valid(argv = $state.argv)
     valid = true
-    $state.argv.each do |directory|
+    argv.each do |directory|
         directory_valid = valid_directory(directory)
         unless directory_valid
-            puts "Invalid directory supplied on command line: #{directory}."
+            puts "Error: Invalid directory supplied on command line: #{directory}."
         end
         valid = directory_valid && valid
     end

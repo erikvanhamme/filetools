@@ -14,7 +14,7 @@ def tape_args_valid
     $state.argv.each do |label|
         label_valid = valid_tape_label(label)
         unless label_valid
-            puts "Invalid label supplied on command line: #{label}."
+            puts "Error: Invalid label supplied on command line: #{label}."
         end
         valid = label_valid && valid
     end
