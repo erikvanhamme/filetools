@@ -47,7 +47,7 @@ def create_tapesets_table
     db = $state.db
     
     db.execute 'CREATE TABLE IF NOT EXISTS tapesets(number INTEGER PRIMARY KEY,
-        name TEXT, tape_count INTEGER)'
+        name TEXT UNIQUE, tape_count INTEGER)'
 end
 
 #db
