@@ -31,7 +31,7 @@ def tool_run(state, db)
                     tapeset_names << arg
                     next_is_name = false
                 else
-                    argv << arg
+                    argv << File.expand_path(arg)
                     no_filter = false
                 end
             end
@@ -64,7 +64,7 @@ def tool_run(state, db)
             end
         end
         unless directory_args_valid(argv)
-            #error = true
+            error = true
         end
     end
 

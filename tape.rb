@@ -9,9 +9,9 @@ def valid_tape_label(label)
     return label =~ /[A-Z0-9]{6}[L]{1}[1-8]{1}/
 end
 
-def tape_args_valid
+def tape_args_valid(argv = $state.argv)
     valid = true
-    $state.argv.each do |label|
+    argv.each do |label|
         label_valid = valid_tape_label(label)
         unless label_valid
             puts "Error: Invalid label supplied on command line: #{label}."
