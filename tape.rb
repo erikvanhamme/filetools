@@ -44,3 +44,13 @@ def tape_added(label)
     end
 end
 
+def tapeset_exists(name, error=false)
+    if ($state.verbose) || error
+        e = ''
+        if error
+            e = 'Error: '
+        end
+        puts "#{e}Tapeset record for  #{name} exists." 
+    end
+end
+

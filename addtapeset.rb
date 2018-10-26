@@ -10,6 +10,8 @@ def tool_run(state, db)
     no_filter = true
     first_fit_decreasing = false
     set_count = 1
+    next_is_name = false
+    tapeset_names = []
     
     # Handle command line arguments.
     argv = []
@@ -17,13 +19,47 @@ def tool_run(state, db)
         case arg
         when '-ffd'
             first_fit_decreasing = true
-        when '-dual'
+        when '-double'
             set_count = [set_count, 2].max()
-        when '-tripple'
+        when '-triple'
             set_count = [set_count, 3].max()
+        when '-name'
+            next_is_name = true
         else
-            argv << arg
-            no_filter = false
+            if (next_is_name)
+                tapeset_names << arg
+                next_is_name = false
+            else
+                argv << arg
+                no_filter = false
+            end
+        end
+    end
+    if tapeset_names.length() == 0
+        tapeset_names << 'tapeset'
+    end
+    if set_count > 1
+        n = tapeset_names[0]
+        tapeset_names = []
+        for i in 0..(set_count - 1)
+            suffix = ''
+            case i
+            when 0
+                suffix = ' (primary)'
+            when 1
+                suffix = ' (secondary)'
+            when 2
+                suffix = ' (tertiary)'
+            end
+            tapeset_names << (n + suffix)
+        end
+    end
+    tapeset_names.each do |n|
+        # Check if the name already exists in the tapesets table.
+        c = db.get_first_value("SELECT COUNT (*) FROM tapesets WHERE name=\"#{n}\"").to_i
+        if (c > 0)
+            tapeset_exists(n, true)
+            error = true
         end
     end
     unless directory_args_valid(argv)
@@ -126,6 +162,8 @@ def tool_run(state, db)
                     end
                 end
             end
+
+            puts tapeset_names
         end
     end
 end
