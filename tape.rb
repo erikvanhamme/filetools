@@ -37,10 +37,37 @@ def tape_exists(label)
     end
 end
 
+def tape_doesnt_exist(label)
+    unless $state.quiet
+        puts "Tape record for #{label} does not exist."
+    end
+end
+
 def tape_added(label)
     $state.tapes_added += 1
     if $state.verbose
         puts "Tape record for #{label} added."
+    end
+end
+
+def tape_updated(label)
+    $state.tapes_updated += 1
+    if $state.verbose
+        puts "Tape record for #{label} updated."
+    end
+end
+
+def tapeset_added(name)
+    $state.tapesets_added += 1
+    if $state.verbose
+        puts "Tapeset record for #{name} added."
+    end
+end
+
+def file_tape_link_added(name, label)
+    $state.file_tape_links_added += 1
+    if $state.verbose
+        puts "File <-> tape link record for #{name}, #{label} added."
     end
 end
 

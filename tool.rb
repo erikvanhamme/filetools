@@ -1,9 +1,8 @@
 require_relative 'db'
 
 class State
-    attr_accessor :db, :version, :db_version, :tool, :verbose, :quiet, :argv, \
-                    :incompatible, :files_added, :files_updated, :files_removed, \
-                    :tapes_added
+    attr_accessor :db, :version, :db_version, :tool, :verbose, :quiet, :argv, :incompatible, :files_added, :files_updated, :files_removed, \
+                    :tapes_added, :tapes_updated, :tapesets_added, :file_tape_links_added
 
     def initialize(tool)
         @version = 1
@@ -17,6 +16,9 @@ class State
         @files_updated = 0
         @files_removed = 0
         @tapes_added = 0
+        @tapes_updated = 0
+        @tapesets_added = 0
+        @file_tape_links_added = 0
     end
 end
 
@@ -101,6 +103,18 @@ def report
         if $state.tapes_added > 0
             puts "  #{$state.tapes_added} tape records added."
             mods += $state.tapes_added
+        end
+        if $state.tapes_updated > 0
+            puts "  #{$state.tapes_updated} tape records updated."
+            mods += $state.tapes_updated
+        end
+        if $state.tapesets_added > 0
+            puts "  #{$state.tapesets_added} tapeset records added."
+            mods += $state.tapesets_added
+        end
+        if $state.file_tape_links_added > 0
+            puts "  #{$state.file_tape_links_added} file <-> tape link records added."
+            mods += $state.file_tape_links_added
         end
         if mods == 0
             puts '  No database changes.'

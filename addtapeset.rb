@@ -14,56 +14,58 @@ def tool_run(state, db)
     tapeset_names = []
     
     # Handle command line arguments.
-    argv = []
-    state.argv.each() do |arg|
-        case arg
-        when '-ffd'
-            first_fit_decreasing = true
-        when '-double'
-            set_count = [set_count, 2].max()
-        when '-triple'
-            set_count = [set_count, 3].max()
-        when '-name'
-            next_is_name = true
-        else
-            if (next_is_name)
-                tapeset_names << arg
-                next_is_name = false
+    unless error
+        argv = []
+        state.argv.each() do |arg|
+            case arg
+            when '-ffd'
+                first_fit_decreasing = true
+            when '-double'
+                set_count = [set_count, 2].max()
+            when '-triple'
+                set_count = [set_count, 3].max()
+            when '-name'
+                next_is_name = true
             else
-                argv << arg
-                no_filter = false
+                if (next_is_name)
+                    tapeset_names << arg
+                    next_is_name = false
+                else
+                    argv << arg
+                    no_filter = false
+                end
             end
         end
-    end
-    if tapeset_names.length() == 0
-        tapeset_names << 'tapeset'
-    end
-    if set_count > 1
-        n = tapeset_names[0]
-        tapeset_names = []
-        for i in 0..(set_count - 1)
-            suffix = ''
-            case i
-            when 0
-                suffix = ' (primary)'
-            when 1
-                suffix = ' (secondary)'
-            when 2
-                suffix = ' (tertiary)'
+        if tapeset_names.length() == 0
+            tapeset_names << 'tapeset'
+        end
+        if set_count > 1
+            n = tapeset_names[0]
+            tapeset_names = []
+            for i in 0..(set_count - 1)
+                suffix = ''
+                case i
+                when 0
+                    suffix = ' (primary)'
+                when 1
+                    suffix = ' (secondary)'
+                when 2
+                    suffix = ' (tertiary)'
+                end
+                tapeset_names << (n + suffix)
             end
-            tapeset_names << (n + suffix)
         end
-    end
-    tapeset_names.each do |n|
-        # Check if the name already exists in the tapesets table.
-        c = db.get_first_value("SELECT COUNT (*) FROM tapesets WHERE name=\"#{n}\"").to_i
-        if (c > 0)
-            tapeset_exists(n, true)
-            error = true
+        tapeset_names.each do |n|
+            # Check if the name already exists in the tapesets table.
+            c = db.get_first_value("SELECT COUNT (*) FROM tapesets WHERE name=\"#{n}\"").to_i
+            if (c > 0)
+                tapeset_exists(n, true)
+                error = true
+            end
         end
-    end
-    unless directory_args_valid(argv)
-        #error = true
+        unless directory_args_valid(argv)
+            #error = true
+        end
     end
 
     # Command line args alright? -> Proceed file selection from database.
@@ -145,7 +147,7 @@ def tool_run(state, db)
         end
     end
 
-    # Bin packing done? -> Proceed to database updates.
+    # Bin packing done? -> Report if verbose.
     unless error
         if state.verbose
             for i in 0..(tapes_needed - 1)
@@ -162,8 +164,41 @@ def tool_run(state, db)
                     end
                 end
             end
+        end
+    end
 
-            puts tapeset_names
+    # Bin packing done? -> Check if sufficient free tapes are available.
+    unless error
+        tapes_required = tapes_needed * set_count
+
+        free_tapes = db.execute('SELECT * FROM tapes WHERE tapeset=-1 ORDER BY label ASC')
+        tapes_required = tapes_needed * set_count        
+        if free_tapes.length() < tapes_required
+            puts("Error: Unsufficient free tapes. Available: #{free_tapes.length()} Required: #{tapes_required}")
+            error = true
+        end
+    end
+
+    # Sufficient tapes available? -> Create tapesets in database.
+    unless error
+        tape_index = 0
+        for set in 0..(set_count - 1)
+            db.execute("INSERT INTO tapesets (name, tape_count) VALUES (\"#{tapeset_names[set]}\", #{tapes_needed})")
+            tapeset_added(tapeset_names[set])
+            set_number = db.get_first_value("SELECT number FROM tapesets WHERE name=\"#{tapeset_names[set]}\"").to_i
+
+            for tape in 0..(tapes_needed - 1)
+                tape_index_in_set = tape_index % tapes_needed
+                db.execute("UPDATE tapes SET tapeset=#{set_number}, tapeset_idx=#{tape_index_in_set} WHERE label=\"#{free_tapes[tape_index][1]}\"")
+                tape_updated(free_tapes[tape_index][1])
+
+                tape_contents[tape_index_in_set].each() do |file|
+                    db.execute("INSERT INTO file_tape_links (file_number, tape_number) VALUES (#{file[0]}, #{free_tapes[tape_index][0]})")
+                    file_tape_link_added(file[4], free_tapes[tape_index][1])
+                end
+
+                tape_index += 1
+            end
         end
     end
 end
