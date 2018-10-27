@@ -685,7 +685,15 @@ end
 def tool_list_tapes()
     unless ($state.quiet)
         db = $state.db
-        tapes = db.execute('SELECT * FROM tapes')
+        query = 'SELECT * FROM tapes'
+        if ($state.items.length() > 0)
+            query += ' WHERE'
+            $state.items.each() do |label|
+                query += " label=\"#{label}\" OR"
+            end
+            query.chomp!(' OR')
+        end
+        tapes = db.execute(query)
         puts("Number:\tLabel:\t\tTape size:\tTapeset:\tTapeset idx:")
         tapes.each() do |tape|
             puts("#{tape[0]}\t#{tape[1]}\t#{tape[2]}\t#{tape[3]}\t\t#{tape[4]}")
