@@ -1,6 +1,7 @@
 #!/usr/bin/ruby
 
 require 'optparse'
+require 'sqlite3'
 
 #-------------------------------------------------------------------------------
 # Class definitions
@@ -54,8 +55,7 @@ end
 
 class State
     attr_accessor :db, :version, :db_version, :report, :mode, :action
-    attr_accessor :verbose, :quiet, :relative, :duplicates
-    attr_accessor :items
+    attr_accessor :verbose, :quiet, :relative, :duplicates, :items, :incompatible
 
     def initialize()
         @db = nil
@@ -71,6 +71,8 @@ class State
         @duplicates = false
 
         @items = []
+
+        @incompatible = false
     end
 end
 
@@ -81,6 +83,139 @@ $state = State.new()
 
 #-------------------------------------------------------------------------------
 # DB method section
+
+def db_empty?()
+    db = $state.db
+
+    version_table = db.execute('SELECT name FROM sqlite_master WHERE type="table" AND name="version"')
+
+    version_table.length == 0
+end
+
+def db_create_version_table()
+    db = $state.db
+
+    db.execute('CREATE TABLE version(version INTEGER NOT NULL, db_version INTEGER NOT NULL)')
+
+    db.execute("INSERT INTO version(version, db_version) VALUES(#{$state.version}, #{$state.db_version})")
+end
+
+def db_create_files_table()
+    db = $state.db
+    
+	db.execute('CREATE TABLE IF NOT EXISTS files(number INTEGER PRIMARY KEY, 
+        sha1 TEXT, size INTEGER, mtime INTEGER, path TEXT, latest INTEGER,
+        deleted INTEGER)')
+
+	db.execute('CREATE INDEX IF NOT EXISTS files_sha1 ON files(sha1)')
+	db.execute('CREATE INDEX IF NOT EXISTS files_path ON files(path)')
+end
+
+def db_create_tapes_table()
+    db = $state.db
+    
+    db.execute('CREATE TABLE IF NOT EXISTS tapes(number INTEGER PRIMARY KEY,
+        label TEXT, size INTEGER, tapeset INTEGER, tapeset_idx INTEGER)')
+end
+
+def db_create_tapesets_table()
+    db = $state.db
+    
+    db.execute('CREATE TABLE IF NOT EXISTS tapesets(number INTEGER PRIMARY KEY,
+        name TEXT UNIQUE, tape_count INTEGER)')
+end
+
+def db_create_file_tape_links_table()
+    db = $state.db
+    
+    db.execute('CREATE TABLE IF NOT EXISTS file_tape_links(file_number INTEGER, 
+        tape_number INTEGER)')
+end
+
+def db_create_schema()
+    unless ($state.quiet)
+        puts('Initializing new database.')
+    end
+    db_create_version_table()
+    db_create_files_table()
+    db_create_tapes_table()
+    db_create_tapesets_table()
+    db_create_file_tape_links_table()
+end
+
+def db_increment_schema(current)
+    db = $state.db
+
+    unless ($state.quiet)
+        puts("Updating database schema from V#{current}.")
+    end
+
+    if (current == 1)
+        # TODO: Handle schema update from V1 to V2 here.
+    end
+    if (current == 2)
+        # TODO: Handle schema update from V2 to V3 here.
+    end
+    current += 1
+
+    db.execute("UPDATE version SET db_version=#{current}")
+
+    return current
+end
+
+def db_update_schema()
+    db = $state.db
+    
+    versions = db.execute('SELECT * FROM version')
+    version_in_db = versions[0][0]
+    db_version_in_db = versions[0][1]
+
+    if (version_in_db != $state.version)
+        db.execute("UPDATE version SET version=#{$state.version}")
+    end
+
+    while (db_version_in_db < $state.db_version)
+        db_version_in_db = db_increment_schema(db_version_in_db)
+    end
+end
+
+def db_check_schema()
+    db = $state.db
+    
+    versions = db.execute('SELECT * FROM version')
+    version_in_db = versions[0][0]
+    db_version_in_db = versions[0][1]
+
+    if (version_in_db > $state.version) || (db_version_in_db > $state.db_version)
+        puts('Error: Database was created with higher code or database version of the tools.')
+        $state.incompatible = true
+        return
+    end
+    
+    db_update_schema()
+end
+
+def db_init()
+    db = SQLite3::Database.new("filetools.db")
+    $state.db = db
+
+    if (db_empty?)
+        db_create_schema()
+    else
+        db_check_schema()
+    end
+
+    if ($state.incompatible)
+        exit(-1)
+    end
+
+    unless ($state.quiet)
+        puts('  ' + db.get_first_value('SELECT COUNT(*) FROM files').to_s + ' file records in database.')
+        puts('  ' + db.get_first_value('SELECT COUNT(*) FROM tapes').to_s + ' tape records in database.')
+        puts('  ' + db.get_first_value('SELECT COUNT(*) FROM tapesets').to_s + ' tape set records in database.')
+        puts('  ' + db.get_first_value('SELECT COUNT(*) FROM file_tape_links').to_s + ' file <-> tape link records in database.')
+    end
+end
 
 #-------------------------------------------------------------------------------
 # File method section
@@ -268,7 +403,26 @@ def tool_parse_command_line()
     $state.items.flatten!
 end
 
-error = !tool_check_command_line(tool_parse_command_line())
-puts error
-puts $state.items
+begin
+    unless ($state.quiet)
+        puts("Filetool (Version #{$state.version}, DB Version #{$state.db_version})")
+    end
+
+    error = !tool_check_command_line(tool_parse_command_line())
+    unless (error)
+        db_init()
+
+        # TODO: Operational logic of the tool goes here.        
+
+        unless ($state.quiet)
+            $state.report.report()
+        end
+    end
+rescue SQLite3::Exception => e 
+    puts "Database exception occurred:"
+    puts e
+ensure
+    db = $state.db
+    db.close if db
+end
 
