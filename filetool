@@ -265,6 +265,93 @@ def file_updated(file)
     end
 end
 
+def file_add(file)
+    db = $state.db
+    absolute_path = File.expand_path(file)
+    filesize = File.size(absolute_path)
+    mtime = File.mtime(absolute_path)
+
+    present_in_db = db.get_first_value("SELECT COUNT(*) FROM files WHERE path=\"#{absolute_path}\" AND deleted=0").to_i()
+    if (present_in_db == 0)
+        sha1 = file_sha1(absolute_path)
+        db.execute("INSERT INTO files (sha1, size, mtime, path, latest, deleted) VALUES (\"#{sha1}\", #{filesize}, #{mtime.to_i}, \"#{absolute_path}\", 1, 0)")
+        file_added(absolute_path)
+    else
+        file_exists(absolute_path)
+    end
+end
+
+def file_update(file)
+    db = $state.db
+    absolute_path = File.expand_path(file)
+    filesize = File.size(absolute_path)
+    mtime = File.mtime(absolute_path)
+
+    files = db.execute("SELECT * FROM files WHERE path=\"#{absolute_path}\" AND latest=1 AND deleted=0")
+    if (files.length() == 0)
+        file_doesnt_exist(absolute_path)
+    elsif (files.length() == 1)
+        file = files[0]
+
+        unless ((file[2] == filesize) && (file[3] == mtime.to_i()))
+            sha1 = file_sha1(absolute_path)
+            file_num = file[0]
+            on_tapes = db.get_first_value("SELECT COUNT (*) FROM file_tape_links WHERE file_number=#{file_num}").to_i()
+
+            if (on_tapes != 0)
+                db.execute("UPDATE files SET latest=0 WHERE number=#{file_num}")
+                db.execute("INSERT INTO files (sha1, size, mtime, path, latest, deleted) VALUES (\"#{sha1}\", #{filesize}, #{mtime.to_i}, \"#{absolute_path}\", 1, 0)")
+                file_added(absolute_path)
+            else
+                db.execute("UPDATE files SET sha1=\"#{sha1}\", size=#{filesize}, mtime=#{mtime.to_i} WHERE number=#{file_num}")
+                file_updated(absolute_path)
+            end
+        end
+    else
+        puts("Error: #{absolute_path} appears multiple times as latest file in database.")
+    end
+end
+
+def file_remove(file)
+    db = $state.db
+    absolute_path = File.expand_path(file)
+
+    files = db.execute("SELECT * FROM files WHERE path=\"#{absolute_path}\" AND latest=1 AND deleted=0")
+    if (files.length() == 0)
+        file_doesnt_exist(absolute_path)
+    elsif (files.length() == 1)
+        file = files[0]
+
+        file_num = file[0]
+        on_tapes = db.get_first_value("SELECT COUNT (*) FROM file_tape_links WHERE file_number=#{file_num}").to_i()
+
+        if (on_tapes != 0)
+            db.execute("UPDATE files SET latest=0, deleted=1 WHERE number=#{file_num}")
+            file_updated(absolute_path)
+        else
+            db.execute("DELETE FROM files WHERE number=#{file_num}")
+            file_removed(absolute_path)
+        end
+    else
+        puts("Error: #{absolute_path} appears multiple times as latest file in database.")
+    end
+end
+
+def file_view(file)
+    db = $state.db
+    absolute_path = File.expand_path(file)
+
+    files = db.execute("SELECT * FROM files WHERE path=\"#{absolute_path}\" AND latest=1 AND deleted=0")
+    if (files.length() == 0)
+        file_doesnt_exist(absolute_path)
+    elsif (files.length() == 1)
+        file_num = file[0]
+        puts("  #{file[4]} #{file[2]}"); # TODO: Complete display.
+    else
+        puts("Error: #{absolute_path} appears multiple times as latest file in database.")
+    end
+end
+
 #-------------------------------------------------------------------------------
 # Path method section
 
@@ -471,91 +558,40 @@ def tool_parse_command_line()
     $state.items.flatten!
 end
 
+def tool_add_files()
+end
+
+def tool_update_files()
+end
+
+def tool_remove_files()
+end
+
 def tool_add_paths()
-    db = $state.db
     $state.items.each() do |dir|
 	    Find.find(dir) do |path|
 		    if (File.file?(path))
-			    absolute_path = File.expand_path(path)
-			    filesize = File.size(absolute_path)
-			    mtime = File.mtime(absolute_path)
-
-                present_in_db = db.get_first_value("SELECT COUNT(*) FROM files WHERE path=\"#{absolute_path}\" AND deleted=0").to_i()
-                if (present_in_db == 0)
-                    sha1 = file_sha1(absolute_path)
-                    db.execute("INSERT INTO files (sha1, size, mtime, path, latest, deleted) VALUES (\"#{sha1}\", #{filesize}, #{mtime.to_i}, \"#{absolute_path}\", 1, 0)")
-                    file_added(absolute_path)
-                else
-                    file_exists(absolute_path)
-                end
+                file_add(path)
             end
         end
     end
 end
 
 def tool_update_paths()
-    db = $state.db
     $state.items.each() do |dir|
 	    Find.find(dir) do |path|
 		    if (File.file?(path))
-			    absolute_path = File.expand_path(path)
-			    filesize = File.size(absolute_path)
-			    mtime = File.mtime(absolute_path)
-
-                files = db.execute("SELECT * FROM files WHERE path=\"#{absolute_path}\" AND latest=1 AND deleted=0")
-                if (files.length() == 0)
-                    file_doesnt_exist(absolute_path)
-                elsif (files.length() == 1)
-                    file = files[0]
-
-                    unless ((file[2] == filesize) && (file[3] == mtime.to_i()))
-                        sha1 = file_sha1(absolute_path)
-                        file_num = file[0]
-                        on_tapes = db.get_first_value("SELECT COUNT (*) FROM file_tape_links WHERE file_number=#{file_num}").to_i()
-
-                        if (on_tapes != 0)
-                            db.execute("UPDATE files SET latest=0 WHERE number=#{file_num}")
-                            db.execute("INSERT INTO files (sha1, size, mtime, path, latest, deleted) VALUES (\"#{sha1}\", #{filesize}, #{mtime.to_i}, \"#{absolute_path}\", 1, 0)")
-                            file_added(absolute_path)
-                        else
-                            db.execute("UPDATE files SET sha1=\"#{sha1}\", size=#{filesize}, mtime=#{mtime.to_i} WHERE number=#{file_num}")
-                            file_updated(absolute_path)
-                        end
-                    end
-                else
-                    puts("Error: #{absolute_path} appears multiple times as latest file in database.")
-                end
+                file_update(path)
             end
         end
     end
 end
 
 def tool_remove_paths()
-    db = $state.db
     $state.items.each() do |dir|
         Find.find(dir) do |path|
 	        if File.file?(path)
-		        absolute_path = File.expand_path(path)
-
-                files = db.execute("SELECT * FROM files WHERE path=\"#{absolute_path}\" AND latest=1 AND deleted=0")
-                if (files.length() == 0)
-                    file_doesnt_exist(absolute_path)
-                elsif (files.length() == 1)
-                    file = files[0]
-
-                    file_num = file[0]
-                    on_tapes = db.get_first_value("SELECT COUNT (*) FROM file_tape_links WHERE file_number=#{file_num}").to_i()
-
-                    if (on_tapes != 0)
-                        db.execute("UPDATE files SET latest=0, deleted=1 WHERE number=#{file_num}")
-                        file_updated(absolute_path)
-                    else
-                        db.execute("DELETE FROM files WHERE number=#{file_num}")
-                        file_removed(absolute_path)
-                    end
-                else
-                    puts("Error: #{absolute_path} appears multiple times as latest file in database.")
-                end
+                file_remove(path)
             end
         end
     end
@@ -579,15 +615,27 @@ def tool_add_tapes()
 end
 
 begin
+    # Startup banner, if not in quiet mode.
     unless ($state.quiet)
         puts("Filetool (Version #{$state.version}, DB Version #{$state.db_version})")
     end
 
+    # Parse command line and check if all is correct.
     error = !tool_check_command_line(tool_parse_command_line())
     unless (error)
         db_init()
 
-        # TODO: Operational logic of the tool goes here.
+        # Handle file mode.
+        if ($state.mode == 'file')
+            case $state.action
+            when 'add'
+                tool_add_files()
+            when 'update'
+                tool_update_files()
+            when 'remove'
+                tool_remove_files()
+            end
+        end
 
         # Handle path mode.
         if ($state.mode == 'path')
@@ -603,19 +651,31 @@ begin
             end
         end
 
-        if ($state.mode == 'tape') && ($state.action == 'add')
-            tool_add_tapes()
-        end        
+        # Handle tape mode.
+        if ($state.mode == 'tape')
+            case $state.action
+            when 'add'
+                tool_add_tapes()
+            end
+        end
 
+        # Handle tapeset mode.
+        if ($state.mode == 'tapeset')
+            case $state.action
+            when 'add'
+            end
+        end
+
+        # Generate report at end of execution.
         unless ($state.quiet)
             $state.report.report()
         end
     end
 rescue SQLite3::Exception => e 
-    puts "Database exception occurred:"
-    puts e
+    puts("Database exception occurred:")
+    puts(e)
 ensure
     db = $state.db
-    db.close if db
+    db.close() if (db)
 end
 
