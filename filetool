@@ -106,6 +106,16 @@ end
 # Tool method section
 
 def tool_check_command_line(command_line)
+    # If in tape mode, parse items array for possible input from barcode reader.
+    if ($state.mode == 'tape')
+        new_items = []
+        $state.items.each() do |str|
+            new_items << str.split('*').reject { |c| c.empty? }
+        end
+        new_items.flatten!.uniq!
+        $state.items = new_items
+    end
+
     # Check mode, and if actions are allowed in the mode.
     illegal = { \
         'file' => %w[manifest prune write erase verify], \
@@ -255,14 +265,10 @@ def tool_parse_command_line()
         end
     end
     parser.parse!
+    $state.items.flatten!
 end
-
-
-
-
-
-
 
 error = !tool_check_command_line(tool_parse_command_line())
 puts error
+puts $state.items
 
