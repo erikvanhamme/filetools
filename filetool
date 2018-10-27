@@ -3,33 +3,84 @@
 require 'optparse'
 
 #-------------------------------------------------------------------------------
+# Class definitions
+
+class Report
+    attr_accessor :file_added, :file_updated, :file_removed
+    attr_accessor :tape_added, :tape_updated, :tape_removed
+    attr_accessor :tapeset_added, :tapeset_updated, :tapeset_removed
+    attr_accessor :link_added, :link_updated, :link_removed
+
+    def initialize()
+        @file_added = 0
+        @file_updated = 0
+        @file_removed = 0
+
+        @tape_added = 0
+        @tape_updated = 0
+        @tape_removed = 0
+
+        @tapeset_added = 0
+        @tapeset_updated = 0
+        @tapeset_removed = 0
+
+        @link_added = 0
+        @link_updated = 0
+        @link_removed = 0
+    end
+
+    def report()
+        sum = 0
+        sum += @file_added + @file_updated + @file_removed
+        sum += @tape_added + @tape_updated + @tape_removed
+        sum += @tapeset_added + @tapeset_updated + @tapeset_removed
+        sum += @link_added + @link_updated + @link_removed
+        puts("Report:")
+        puts("  #{@file_added} file records added.") if @file_added > 0
+        puts("  #{@file_updated} file records updated.") if @file_updated > 0
+        puts("  #{@file_removed} file records removed.") if @file_removed > 0
+        puts("  #{@tape_added} tape records added.") if @tape_added > 0
+        puts("  #{@tape_updated} tape records updated.") if @tape_updated > 0
+        puts("  #{@tape_removed} tape records removed.") if @tape_removed > 0
+        puts("  #{@tapeset_added} tapeset records added.") if @tapeset_added > 0
+        puts("  #{@tapeset_updated} tapeset records updated.") if @tapeset_updated > 0
+        puts("  #{@tapeset_removed} tapeset records removed.") if @tapeset_removed > 0
+        puts("  #{@link_added} file <-> tape link records added.") if @link_added > 0
+        puts("  #{@link_updated} file <-> tape link records updated.") if @link_updated > 0
+        puts("  #{@link_removed} file <-> tape link records removed.") if @link_removed > 0
+        puts('  No database modifications.') if sum == 0
+    end
+end
+
+class State
+    attr_accessor :db, :version, :db_version, :report, :mode, :action
+    attr_accessor :verbose, :quiet, :relative, :duplicates
+    attr_accessor :items
+
+    def initialize()
+        @db = nil
+        @version = 1
+        @db_version = 1
+        @report = Report.new()
+        @mode = ''
+        @action = ''
+        
+        @verbose = false
+        @quiet = false
+        @relative = false
+        @duplicates = false
+
+        @items = []
+    end
+end
+
+#-------------------------------------------------------------------------------
 # Global vars section
 
-$tool_modes = ['file', 'path', 'tape', 'tapeset']
-$tool_actions = ['add', 'remove', 'update', 'list', 'info', 'manifest', 'prune', 'check', 'write', 'erase', 'verify']
-$tool_modifiers = ['verbose', 'quiet', 'relative', 'duplicates']
+$state = State.new()
 
-$tool_mode_action_matrix = [ \
-    [1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 0], \
-    [1, 1, 1, 1, 1, 0, 1, 1, 0, 0, 0], \
-    [1, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1], \
-    [1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0]]
-
-$tool_action_action_matrix = [ \
-    [1, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0], \
-    [1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0], \
-    [0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0], \
-    [0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0], \
-    [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0], \
-    [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0], \
-    [1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0], \
-    [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0], \
-    [0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0], \
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0], \
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]]
-
-$tool_actions_items_min = [ 1,  1,  1,  0,  1, 1,  1,  1, 1, 1, 1]
-$tool_actions_items_max = [-1, -1, -1, -1, -1, 1, -1, -1, 1, 1, 1]
+#-------------------------------------------------------------------------------
+# DB method section
 
 #-------------------------------------------------------------------------------
 # File method section
@@ -55,65 +106,54 @@ end
 # Tool method section
 
 def tool_check_command_line(command_line)
-    # Check if exactly one mode has been set.
-    modes_set = 0
-    command_line[:modes].each do |m|
-        modes_set += 1 if m
-    end
-    unless (modes_set == 1)
-        puts('Error: Exactly 1 operational mode must be specified.')
+    # Check mode, and if actions are allowed in the mode.
+    illegal = { \
+        'file' => %w[manifest prune write erase verify], \
+        'path' => %w[manifest write erase verify], \
+        'tape' => %w[update prune check], \
+        'tapeset' => %w[update manifest prune check write erase verify] \
+    }
+    if (illegal[$state.mode] == nil)
+        puts("Error: Unsupported mode #{$state.mode} specified.")
+        return false
+    elsif (illegal[$state.mode].include?($state.action))
+        puts("Error: Mode #{$state.mode} cannot be combined with action #{$state.action}.")
         return false
     end
 
-    # Check if one or more actions have been set. (get item min and max too)
-    actions_set = 0
-    command_line[:actions].each do |a|
-        actions_set += 1 if a
-    end
-    unless (actions_set >= 1)
-        puts('Error: 1 or more actions must be specified.')
+    # Check action.
+    legal = %w[add update remove list info manifest prune check write erase verify]
+    unless (legal.include?($state.action))
+        puts("Error: Unsupported action #{$state.action} specified.")
         return false
-    end 
-
-    # Check if specified actions are compatible with the mode.
-    for i in 0..($tool_modes.length() - 1)
-        for j in 0..($tool_actions.length() - 1)
-            if (command_line[:modes][i] == true) && (command_line[:actions][j] == true) && ($tool_mode_action_matrix[i][j] == 0)
-                puts("Error: Mode #{$tool_modes[i]} cannot be combined with action #{$tool_actions[j]}.");
-                return false
-            end
-        end
-    end
-
-    # Check if specified actions are compatible with eachother.
-    for i in 0..($tool_actions.length() - 1)
-        for j in 0..($tool_actions.length() - 1)
-            if (command_line[:actions][i] == true) && (command_line[:actions][j] == true) && ($tool_action_action_matrix[i][j] == 0)
-                puts("Error: Action #{$tool_actions[i]} cannot be combined with action #{$tool_actions[j]}.");
-                return false
-            end
-        end
     end
 
     # Check if correct number of items is specified.
-    for i in 0..($tool_actions.length() - 1)
-        if (command_line[:actions][i])
-            min = $tool_actions_items_min[i]
-            max = $tool_actions_items_max[i]
-            if (command_line[:items].length() < min)
-                puts("Error: Action #{$tool_actions[i]} requires at least #{min} items to operate on.")
-                return false
-            end
-            if (max != -1) && (command_line[:items].length() > max)
-                puts("Error: Action #{$tool_actions[i]} requires at most #{max} items to operate on.")
-                return false
-            end
-        end
+    min = 0
+    max = 0
+    case $state.action
+    when 'add', 'update', 'remove', 'info', 'prune', 'check'
+        min = 1
+        max = -1
+    when 'list'
+        min = 0
+        max = -1
+    when 'manifest', 'write', 'erase', 'verify'
+        min = 1
+        max = 1
+    end
+    if ($state.items.length() < min)
+        puts("Error: At least #{min} items must be specified.")
+        return false
+    end
+    if (max > -1) && ($state.items.length() > max)
+        puts("Error: Maximum #{max} items may be specified.")
+        return false
     end
 
     # Check if all items are valid files if in file mode.
-    if (command_line[:modes][$tool_modes.index('file')])
-        command_line[:items].each() do |file|
+    if ($state.mode == 'file')
+        $state.items.each() do |file|
             unless (File.file?(file))
                 puts("Error: Incorrect file name: #{file}")
                 return false
@@ -122,8 +162,8 @@ def tool_check_command_line(command_line)
     end
 
     # Check if all items are valid paths if in path mode.
-    if (command_line[:modes][$tool_modes.index('path')])
-        command_line[:items].each() do |path|
+    if ($state.mode == 'path')
+        $state.items.each() do |path|
             unless (File.directory?(path))
                 puts("Error: Incorrect path name: #{path}")
                 return false
@@ -132,8 +172,8 @@ def tool_check_command_line(command_line)
     end
 
     # Check if all items are valid tapes if in tape mode.
-    if (command_line[:modes][$tool_modes.index('tape')])
-        command_line[:items].each() do |label|
+    if ($state.mode == 'tape')
+        $state.items.each() do |label|
             unless (tape_valid_label?(label))
                 puts("Error: Incorrect tape label: #{label}")
                 return false
@@ -145,123 +185,84 @@ def tool_check_command_line(command_line)
     return true
 end
 
-def tool_parse_command_line
-    modes = []
-    actions = []
-    modifiers = []
-    items = []
-
-    $tool_modes.length().times { modes << false }
-    $tool_modifiers.length().times { modifiers << false }
-    $tool_actions.length().times { actions << false }
-
+def tool_parse_command_line()
     parser = OptionParser.new() do |options|
         options.on('-h', '--help', 'Displays this help message.') do ||
             puts(options)
         end
 
         options.on('-m mode', '--mode mode', 'Specifies the operational mode. [file, path, tape, tapeset]') do |mode|
-            idx = $tool_modes.index(mode)
-            modes[idx] = true if idx
+            $state.mode = mode
         end
 
         options.on('-a', '--add item', 'Adds the specified item.') do |item|
-            idx = $tool_actions.index('add')
-            actions[idx] = true if idx
-            items << item
+            $state.action = 'add'
+            $state.items << item
         end
-
         options.on('-u', '--update item', 'Updates the specified item.') do |item|
-            idx = $tool_actions.index('update')
-            actions[idx] = true if idx
-            items << item
+            $state.action = 'update'
+            $state.items << item
         end
-
         options.on('-r', '--remove item', 'Removes the specified item.') do |item|
-            idx = $tool_actions.index('remove')
-            actions[idx] = true if idx
-            items << item
+            $state.action = 'remove'
+            $state.items << item
         end
-
         options.on('-l', '--list [item]', 'Lists the specified item.') do |item|
-            idx = $tool_actions.index('list')
-            actions[idx] = true if idx
-            items << item
+            $state.action = 'list'
+            $state.items << item if item
         end
-
         options.on('-i', '--info item', 'Displays info about the specified item.') do |item|
-            idx = $tool_actions.index('info')
-            actions[idx] = true if idx
-            items << item
+            $state.action = 'info'
+            $state.items << item
         end
-
         options.on('-M', '--manifest tape', 'Displays the manifest of the specified tape.') do |tape|
-            idx = $tool_actions.index('manifest')
-            actions[idx] = true if idx
-            items << tape
+            $state.action = 'manifest'
+            $state.items << item
         end
-
         options.on('-p', '--prune item', 'Prunes the specified item.') do |item|
-            idx = $tool_actions.index('prune')
-            actions[idx] = true if idx
-            items << item
+            $state.action = 'prune'
+            $state.items << item
         end
-
         options.on('-c', '--check item', 'Checks the specified item.') do |item|
-            idx = $tool_actions.index('check')
-            actions[idx] = true if idx
-            items << item
+            $state.action = 'check'
+            $state.items << item
         end
-
         options.on('-w', '--write tape', 'Writes the specified tape.') do |tape|
-            idx = $tool_actions.index('write')
-            actions[idx] = true if idx
-            items << tape
+            $state.action = 'write'
+            $state.items << item
         end
-
         options.on('-e', '--erase tape', 'Erases the specified tape.') do |tape|
-            idx = $tool_actions.index('erase')
-            actions[idx] = true if idx
-            items << tape
+            $state.action = 'erase'
+            $state.items << item
         end
-
         options.on('-V', '--verify tape', 'Verifies the specified tape.') do |tape|
-            idx = $tool_actions.index('verify')
-            actions[idx] = true if idx
-            items << tape
+            $state.action = 'verify'
+            $state.items << item
         end
 
         options.on('-v', '--verbose', 'Enables verbose mode.') do ||
-            idx = $tool_modifiers.index('verbose')
-            modifiers[idx] = true if idx
+            $state.verbose = true
         end
-
         options.on('-q', '--quiet', 'Enables quiet mode. Overrides verbose mode.') do ||
-            idx = $tool_modifiers.index('verbose')
-            modifiers[idx] = false if idx
-            idx = $tool_modifiers.index('quiet')
-            modifiers[idx] = true if idx
+            $state.quiet = true
+            $state.verbose = false
         end
-
         options.on('-R', '--relative', 'Display paths as relative.') do ||
-            idx = $tool_modifiers.index('relative')
-            modifiers[idx] = true if idx
+            $state.relative = true
         end
-
         options.on('-d', '--duplicates', 'Enables duplicates mode.') do ||
-            idx = $tool_modifiers.index('duplicates')
-            modifiers[idx] = true if idx
+            $state.duplicates = true
         end
     end
     parser.parse!
-    
-    return {:modes => modes, :actions => actions, :modifiers => modifiers, :items => items}
 end
 
-command_line = tool_parse_command_line()
 
-error = !tool_check_command_line(command_line)
 
-puts command_line
+
+
+
+
+error = !tool_check_command_line(tool_parse_command_line())
 puts error
 
