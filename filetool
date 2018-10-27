@@ -205,7 +205,7 @@ def db_check_schema()
 end
 
 def db_init()
-    db = SQLite3::Database.new("filetools.db")
+    db = SQLite3::Database.new("filetool.db")
     $state.db = db
 
     if (db_empty?)
