@@ -353,9 +353,6 @@ def file_view(file)
 end
 
 #-------------------------------------------------------------------------------
-# Path method section
-
-#-------------------------------------------------------------------------------
 # Tape method section
 
 def tape_valid_label?(label)
@@ -400,9 +397,12 @@ def tool_check_command_line(command_line)
     if ($state.mode == 'tape')
         new_items = []
         $state.items.each() do |str|
-            new_items << str.split('*').reject { |c| c.empty? }
+            new_items << str.split('*').reject() { |c| c.empty?() }
         end
-        new_items.flatten!.uniq!
+        new_items.flatten!()
+        unless (new_items == nil)
+            new_items.uniq!()
+        end
         $state.items = new_items
     end
 
@@ -629,6 +629,20 @@ def tool_add_tapes()
     end
 end
 
+def tool_list_tapes()
+    unless ($state.quiet)
+        db = $state.db
+        tapes = db.execute('SELECT * FROM tapes')
+        puts("Number:\tLabel:\t\tTape size:\tTapeset:\tTapeset idx:")
+        tapes.each() do |tape|
+            puts("#{tape[0]}\t#{tape[1]}\t#{tape[2]}\t#{tape[3]}\t\t#{tape[4]}")
+        end
+    end
+end
+
+def tool_add_tapesets()
+end
+
 begin
     # Startup banner, if not in quiet mode.
     unless ($state.quiet)
@@ -671,6 +685,8 @@ begin
             case $state.action
             when 'add'
                 tool_add_tapes()
+            when 'list'
+                tool_list_tapes()
             end
         end
 
@@ -678,6 +694,7 @@ begin
         if ($state.mode == 'tapeset')
             case $state.action
             when 'add'
+                tool_add_tapesets()
             end
         end
 
