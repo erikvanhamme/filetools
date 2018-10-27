@@ -3,6 +3,7 @@
 require 'digest/sha1'
 require 'find'
 require 'optparse'
+require 'pathname'
 require 'sqlite3'
 
 #-------------------------------------------------------------------------------
@@ -343,6 +344,7 @@ def file_remove(file)
     end
 end
 
+# TODO: Figure out if this one is needed. Noone calls it.
 def file_view(file)
     db = $state.db
     absolute_path = File.expand_path(file)
@@ -691,6 +693,23 @@ def tool_list_tapes()
     end
 end
 
+def tool_info_tapes()
+    db = $state.db
+    $state.items.each() do |tape_label|
+        unless ($state.quiet)
+            puts("Contents for tape #{tape_label}:")
+        end
+
+        files = db.execute("SELECT path, sha1 FROM files LEFT JOIN file_tape_links ON file_tape_links.file_number = files.number LEFT JOIN tapes ON tapes.number = file_tape_links.tape_number WHERE tapes.label=\"#{tape_label}\" ORDER BY files.path ASC")
+
+        files.each() do |file|
+            filename = file[0]
+            filename = Pathname.new(file[0]).relative_path_from(Pathname.new(File.expand_path(File.dirname(__FILE__)))).to_s() if ($state.relative)
+            puts("#{file[1]}  #{filename}")
+        end
+    end
+end    
+
 def tool_tapesets_add()
     db = $state.db
 
@@ -915,6 +934,8 @@ begin
                 tool_add_tapes()
             when 'list'
                 tool_list_tapes()
+            when 'info'
+                tool_info_tapes()
             end
         end
 
