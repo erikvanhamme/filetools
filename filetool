@@ -559,12 +559,27 @@ def tool_parse_command_line()
 end
 
 def tool_add_files()
+    $state.items.each() do |file|
+        if (File.file?(file))
+            file_add(file)
+        end
+    end
 end
 
 def tool_update_files()
+    $state.items.each() do |file|
+        if (File.file?(file))
+            file_update(file)
+        end
+    end
 end
 
 def tool_remove_files()
+    $state.items.each() do |file|
+        if (File.file?(file))
+            file_remove(file)
+        end
+    end
 end
 
 def tool_add_paths()
