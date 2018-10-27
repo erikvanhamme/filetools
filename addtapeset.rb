@@ -79,12 +79,13 @@ def tool_run(state, db)
             query += ' WHERE'
             argv.each() do |arg|
                 if(first)
-                    query += " path LIKE \"#{arg}%\""
+                    query += " (path LIKE \"#{arg}%\""
                     first = false
                 else
                     query += " OR path LIKE \"#{arg}%\""
                 end
             end
+            query += ') AND latest=1 AND deleted=0'
         end
         if (first_fit_decreasing)
             query += ' ORDER BY size DESC'
