@@ -683,25 +683,54 @@ def tool_add_tapes()
 end
 
 def tool_list_tapes()
-    unless ($state.quiet)
-        db = $state.db
-        query = 'SELECT * FROM tapes'
-        if ($state.items.length() > 0)
-            query += ' WHERE'
-            $state.items.each() do |label|
-                query += " label LIKE \"%#{label}%\" OR"
-            end
-            query.chomp!(' OR')
+    db = $state.db
+    query = 'SELECT label FROM tapes'
+    if ($state.items.length() > 0)
+        query += ' WHERE'
+        $state.items.each() do |label|
+            query += " label LIKE \"%#{label}%\" OR"
         end
-        tapes = db.execute(query)
-        puts("Number:\tLabel:\t\tTape size:\tTapeset:\tTapeset idx:")
-        tapes.each() do |tape|
-            puts("#{tape[0]}\t#{tape[1]}\t#{tape[2]}\t#{tape[3]}\t\t#{tape[4]}")
-        end
+        query.chomp!(' OR')
+    end
+    query += ' ORDER BY label ASC'
+    tapes = db.execute(query)
+    puts("Label:")
+    tapes.each() do |tape|
+        puts(tape[0])
     end
 end
 
 def tool_info_tapes()
+    db = $state.db
+    query = 'SELECT tapes.number, tapes.label, tapes.size, tapes.tapeset_idx, tapesets.name FROM tapes LEFT JOIN tapesets ON tapesets.number = tapes.tapeset' 
+    if ($state.items.length() > 0)
+        query += ' WHERE'
+        $state.items.each() do |label|
+            query += " tapes.label = \"#{label}\" OR"
+        end
+        query.chomp!(' OR')
+    end
+    query += ' ORDER BY label ASC'
+
+    puts("Label:\t\tFiles:\tSize:\t\tCapacity:\tUsage:\tTapeset_idx:\tTapeset:")
+    tapes = db.execute(query)
+    tapes.each() do |tape|
+        query = "SELECT * FROM file_tape_links LEFT JOIN files ON file_tape_links.file_number = files.number WHERE file_tape_links.tape_number=#{tape[0]}"
+        files = db.execute(query)
+
+        size = 0
+        files.each() do |file|
+            size += file[4]
+        end
+
+        used = (size.to_f() / (tape[2].to_f() * 0.95)) * 100
+
+        if (size.to_s().length() > 7)
+            puts("#{tape[1]}\t#{files.length}\t#{size}\t#{tape[2]}\t#{used.round(1)} %\t#{tape[3]}\t\t#{tape[4]}")
+        else
+            puts("#{tape[1]}\t#{files.length}\t#{size}\t\t#{tape[2]}\t#{used.round(1)} %\t#{tape[3]}\t\t#{tape[4]}")
+        end
+    end
 end
 
 def tool_manifest_tapes()
@@ -896,22 +925,20 @@ def tool_tapesets_add()
 end
 
 def tool_tapesets_list()
-    query = ''
-    if ($state.items.length() == 0)
-        query = 'SELECT * FROM tapesets ORDER BY name ASC'
-    else
-        query = 'SELECT * FROM tapesets WHERE'
+    query = 'SELECT name FROM tapesets'
+    if ($state.items.length() > 0)
+        query += ' WHERE'
         $state.items.each() do |item|
             query += " name LIKE \"%#{item}%\" OR"
         end
         query.chomp!(' OR')
-        query += ' ORDER BY name ASC'
     end
+    query += ' ORDER BY name ASC'
     db = $state.db
     tapesets = db.execute(query)
-    puts("Number:\tTapes:\tName:")
+    puts("Tapeset name:")
     tapesets.each() do |tapeset|
-        puts("#{tapeset[0]}\t#{tapeset[2]}\t#{tapeset[1]}")
+        puts(tapeset[0])
     end
 end
 
