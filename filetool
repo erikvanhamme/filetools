@@ -237,6 +237,29 @@ def tape_valid_label?(label)
     return label =~ /[A-Z0-9]{6}[L]{1}[1-8]{1}/
 end
 
+def tape_size(label)
+    size = 0
+    suffix = label.split(//).last(2).join()
+    case suffix
+    when 'L4'
+        size = 800000000000
+    end
+    return size
+end
+
+def tape_exists(label)
+    if ($state.verbose)
+        puts "Tape record for #{label} exists."
+    end
+end
+
+def tape_added(label)
+    $state.report.tape_added += 1
+    if ($state.verbose)
+        puts("Tape record for #{label} added.")
+    end
+end
+
 #-------------------------------------------------------------------------------
 # Tool method section
 
@@ -403,6 +426,20 @@ def tool_parse_command_line()
     $state.items.flatten!
 end
 
+def tool_add_tapes()
+    db = $state.db
+    $state.items.each() do |label|
+        present_in_db = db.get_first_value("SELECT COUNT(*) FROM tapes WHERE label=\"#{label}\"").to_i()
+        if (present_in_db == 0)
+            size = tape_size(label)
+            db.execute("INSERT INTO tapes (label, size, tapeset, tapeset_idx) VALUES (\"#{label}\", #{size}, -1, -1)")
+            tape_added(label)
+        else
+            tape_exists(label)
+        end
+    end
+end
+
 begin
     unless ($state.quiet)
         puts("Filetool (Version #{$state.version}, DB Version #{$state.db_version})")
@@ -412,7 +449,11 @@ begin
     unless (error)
         db_init()
 
-        # TODO: Operational logic of the tool goes here.        
+        # TODO: Operational logic of the tool goes here.
+
+        if ($state.mode == 'tape') && ($state.action == 'add')
+            tool_add_tapes()
+        end        
 
         unless ($state.quiet)
             $state.report.report()
