@@ -471,10 +471,10 @@ def tool_check_command_line(command_line)
     min = 0
     max = 0
     case $state.action
-    when 'add', 'update', 'remove', 'info', 'prune', 'check'
+    when 'add', 'update', 'remove', 'prune', 'check'
         min = 1
         max = -1
-    when 'list'
+    when 'list', 'info'
         min = 0
         max = -1
     when 'manifest', 'write', 'erase', 'verify'
@@ -548,11 +548,11 @@ def tool_parse_command_line()
         end
         options.on('-l', '--list [item]', 'Lists the specified item.') do |item|
             $state.action = 'list'
-            $state.items << item if item
+            $state.items << item if (item)
         end
-        options.on('-i', '--info item', 'Displays info about the specified item.') do |item|
+        options.on('-i', '--info [item]', 'Displays info about the specified item.') do |item|
             $state.action = 'info'
-            $state.items << item
+            $state.items << item if (item)
         end
         options.on('-M', '--manifest tape', 'Displays the manifest of the specified tape.') do |tape|
             $state.action = 'manifest'
@@ -853,11 +853,6 @@ def tool_tapesets_add()
                 for j in 0..limit
                     puts("  #{j}: #{tape_contents[i][j][4]}")
                 end
-                tape_contents[i].each() do |file|
-                    if file == nil
-                        puts "nil!"
-                    end
-                end
             end
         end
     end
@@ -898,14 +893,62 @@ def tool_tapesets_add()
     end
 end
 
+def tool_tapesets_list()
+    query = ''
+    if ($state.items.length() == 0)
+        query = 'SELECT * FROM tapesets ORDER BY name ASC'
+    else
+        query = 'SELECT * FROM tapesets WHERE'
+        $state.items.each() do |item|
+            query += " name=\"#{item}\" OR"
+        end
+        query.chomp!(' OR')
+        query += ' ORDER BY name ASC'
+    end
+    db = $state.db
+    tapesets = db.execute(query)
+    puts("Number:\tTapes:\tName:")
+    tapesets.each() do |tapeset|
+        puts("#{tapeset[0]}\t#{tapeset[2]}\t#{tapeset[1]}")
+    end
+end
+
+def tool_tapesets_info()
+    query = ''
+    if ($state.items.length() == 0)
+        query = 'SELECT tapesets.name, tapes.label, tapesets.number, tapes.tapeset_idx, tapesets.tape_count FROM tapes LEFT JOIN tapesets ON tapesets.number=tapes.tapeset WHERE tapes.tapeset!=-1 ORDER BY tapes.label ASC'
+    else
+        query = 'SELECT tapesets.name, tapes.label, tapesets.number, tapes.tapeset_idx, tapesets.tape_count FROM tapes LEFT JOIN tapesets ON tapesets.number=tapes.tapeset WHERE'
+        $state.items.each() do |item|
+            query += " tapesets.name=\"#{item}\" OR"
+        end
+        query.chomp!(' OR')
+        query += ' ORDER BY tapes.label ASC'
+    end
+    db = $state.db
+    info = db.execute(query)
+
+    idx = 0
+    tapeset_name = ''
+    while (idx < info.length())
+        if (tapeset_name != info[idx][0])
+            tapeset_name = info[idx][0]
+            puts("Info for tapeset '#{tapeset_name}':")
+        end
+        puts("  Member tape: #{info[idx][1]} as volume #{info[idx][3] + 1} of #{info[idx][4]}.")
+        idx += 1
+    end
+end
+
 begin
+    # Parse command line and check if all is correct.
+    error = !tool_check_command_line(tool_parse_command_line())
+
     # Startup banner, if not in quiet mode.
     unless ($state.quiet)
         puts("Filetool (Version #{$state.version}, DB Version #{$state.db_version})")
     end
 
-    # Parse command line and check if all is correct.
-    error = !tool_check_command_line(tool_parse_command_line())
     unless (error)
         db_init()
 
@@ -952,6 +995,10 @@ begin
             case $state.action
             when 'add'
                 tool_tapesets_add()
+            when 'list'
+                tool_tapesets_list()
+            when 'info'
+                tool_tapesets_info()
             end
         end
 
