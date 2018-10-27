@@ -501,7 +501,7 @@ def tool_check_command_line(command_line)
     end
 
     # Check if all items are valid paths if in path or tapeset mode.
-    if (($state.mode == 'path') || ($state.mode == 'tapeset'))
+    if (($state.mode == 'path') || (($state.mode == 'tapeset') && ($state.action != 'list')))
         $state.items.each() do |path|
             unless (File.directory?(path))
                 puts("Error: Incorrect path name: #{path}")
@@ -510,8 +510,8 @@ def tool_check_command_line(command_line)
         end
     end
 
-    # Check if all items are valid tapes if in tape mode.
-    if ($state.mode == 'tape')
+    # Check if all items are valid tapes if in tape mode, except when in list action.
+    if (($state.mode == 'tape') && ($state.action != 'list'))
         $state.items.each() do |label|
             unless (tape_valid_label?(label))
                 puts("Error: Incorrect tape label: #{label}")
@@ -689,7 +689,7 @@ def tool_list_tapes()
         if ($state.items.length() > 0)
             query += ' WHERE'
             $state.items.each() do |label|
-                query += " label=\"#{label}\" OR"
+                query += " label LIKE \"%#{label}%\" OR"
             end
             query.chomp!(' OR')
         end
@@ -902,7 +902,7 @@ def tool_tapesets_list()
     else
         query = 'SELECT * FROM tapesets WHERE'
         $state.items.each() do |item|
-            query += " name=\"#{item}\" OR"
+            query += " name LIKE \"%#{item}%\" OR"
         end
         query.chomp!(' OR')
         query += ' ORDER BY name ASC'
