@@ -5,6 +5,7 @@ require 'find'
 require 'optparse'
 require 'pathname'
 require 'sqlite3'
+require 'table_print'
 
 #-------------------------------------------------------------------------------
 # Class definitions
@@ -694,10 +695,10 @@ def tool_list_tapes()
     end
     query += ' ORDER BY label ASC'
     tapes = db.execute(query)
-    puts("Label:")
-    tapes.each() do |tape|
-        puts(tape[0])
+    tapes.collect!() do |tape|
+        {:label => tape[0]}
     end
+    tp(tapes, :label)
 end
 
 def tool_info_tapes()
@@ -712,9 +713,8 @@ def tool_info_tapes()
     end
     query += ' ORDER BY label ASC'
 
-    puts("Label:\t\tFiles:\tSize:\t\tCapacity:\tUsage:\tTapeset_idx:\tTapeset:")
     tapes = db.execute(query)
-    tapes.each() do |tape|
+    tapes.collect!() do |tape|
         query = "SELECT * FROM file_tape_links LEFT JOIN files ON file_tape_links.file_number = files.number WHERE file_tape_links.tape_number=#{tape[0]}"
         files = db.execute(query)
 
@@ -725,12 +725,9 @@ def tool_info_tapes()
 
         used = (size.to_f() / (tape[2].to_f() * 0.95)) * 100
 
-        if (size.to_s().length() > 7)
-            puts("#{tape[1]}\t#{files.length}\t#{size}\t#{tape[2]}\t#{used.round(1)} %\t#{tape[3]}\t\t#{tape[4]}")
-        else
-            puts("#{tape[1]}\t#{files.length}\t#{size}\t\t#{tape[2]}\t#{used.round(1)} %\t#{tape[3]}\t\t#{tape[4]}")
-        end
+        {:label => tape[1], :files => files.length(), :size => size, :capacity => tape[2], :usage => "#{used.round(1)} %", :tapeset_idx => tape[3], :tapeset => tape[4]}
     end
+    tp(tapes, :label, :files, :size, :capacity, :usage, :tapeset_idx, :tapeset)
 end
 
 def tool_manifest_tapes()
@@ -749,7 +746,7 @@ def tool_manifest_tapes()
     end
 end    
 
-def tool_tapesets_add()
+def tool_add_tapesets()
     db = $state.db
 
     error = false
@@ -924,7 +921,7 @@ def tool_tapesets_add()
     end
 end
 
-def tool_tapesets_list()
+def tool_list_tapesets()
     query = 'SELECT name FROM tapesets'
     if ($state.items.length() > 0)
         query += ' WHERE'
@@ -936,13 +933,13 @@ def tool_tapesets_list()
     query += ' ORDER BY name ASC'
     db = $state.db
     tapesets = db.execute(query)
-    puts("Tapeset name:")
-    tapesets.each() do |tapeset|
-        puts(tapeset[0])
+    tapesets.collect!() do |tapeset|
+        {:label => tapeset[0]}
     end
+    tp(tapesets, :label)
 end
 
-def tool_tapesets_info()
+def tool_info_tapesets()
     query = ''
     if ($state.items.length() == 0)
         query = 'SELECT tapesets.name, tapes.label, tapesets.number, tapes.tapeset_idx, tapesets.tape_count FROM tapes LEFT JOIN tapesets ON tapesets.number=tapes.tapeset WHERE tapes.tapeset!=-1 ORDER BY tapes.label ASC'
@@ -957,16 +954,10 @@ def tool_tapesets_info()
     db = $state.db
     info = db.execute(query)
 
-    idx = 0
-    tapeset_name = ''
-    while (idx < info.length())
-        if (tapeset_name != info[idx][0])
-            tapeset_name = info[idx][0]
-            puts("Info for tapeset '#{tapeset_name}':")
-        end
-        puts("  Member tape: #{info[idx][1]} as volume #{info[idx][3] + 1} of #{info[idx][4]}.")
-        idx += 1
+    info.collect!() do |row|
+        {:name => row[0], :tape => row[1], :volume => "#{(row[3] + 1)} / #{row[4]}"}
     end
+    tp(info, :name, :tape, :volume)
 end
 
 begin
@@ -1025,11 +1016,11 @@ begin
         if ($state.mode == 'tapeset')
             case $state.action
             when 'add'
-                tool_tapesets_add()
+                tool_add_tapesets()
             when 'list'
-                tool_tapesets_list()
+                tool_list_tapesets()
             when 'info'
-                tool_tapesets_info()
+                tool_info_tapesets()
             end
         end
 
