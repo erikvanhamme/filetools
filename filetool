@@ -599,7 +599,7 @@ def tool_parse_command_line()
         options.on('-D', '--first-fit-decreasing', 'Use First Fit Decreasing algorithm for packing files onto tapes.') do ||
             $state.ffd = true
         end
-        options.on('-n', '--name', 'Supplies the name of the tapeset.') do |name|
+        options.on('-n', '--name name', 'Supplies the name of the tapeset.') do |name|
             $state.name = name
         end
 
