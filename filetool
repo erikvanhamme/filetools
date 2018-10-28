@@ -437,7 +437,7 @@ def tool_check_command_line(command_line)
     if ($state.mode == 'tape')
         new_items = []
         $state.items.each() do |str|
-            new_items << str.split('*').reject() { |c| c.empty?() }
+            new_items << str.split('*').reject() do |c| c.empty?() end
         end
         new_items.flatten!()
         unless (new_items == nil)
@@ -491,34 +491,38 @@ def tool_check_command_line(command_line)
         return false
     end
 
-    # Check if all items are valid files if in file mode.
-    if ($state.mode == 'file')
-        $state.items.each() do |file|
-            unless (File.file?(file))
-                puts("Error: Incorrect file name: #{file}")
-                return false
+    # Items do not need to be checked when running list action (fuzzy input allowed.)
+    unless($state.action == 'list')
+        # Check if all items are valid files if in file mode.
+        if ($state.mode == 'file')
+            $state.items.each() do |file|
+                unless (File.file?(file))
+                    puts("Error: Incorrect file name: #{file}")
+                    return false
+                end
             end
         end
-    end
 
-    # Check if all items are valid paths if in path or tapeset mode.
-    if (($state.mode == 'path') || (($state.mode == 'tapeset') && ($state.action != 'list')))
-        $state.items.each() do |path|
-            unless (File.directory?(path))
-                puts("Error: Incorrect path name: #{path}")
-                return false
+        # Check if all items are valid paths if in path mode. (or when adding in tapeset mode.)
+        if (($state.mode == 'path') || (($state.mode == 'tapeset') && ($state.action == 'add')))
+            $state.items.each() do |path|
+                unless (File.directory?(path))
+                    puts("Error: Incorrect path name: #{path}")
+                    return false
+                end
             end
         end
-    end
 
-    # Check if all items are valid tapes if in tape mode, except when in list action.
-    if (($state.mode == 'tape') && ($state.action != 'list'))
-        $state.items.each() do |label|
-            unless (tape_valid_label?(label))
-                puts("Error: Incorrect tape label: #{label}")
-                return false
+        # Check if all items are valid tapes if in tape mode, except when in list action.
+        if ($state.mode == 'tape')
+            $state.items.each() do |label|
+                unless (tape_valid_label?(label))
+                    puts("Error: Incorrect tape label: #{label}")
+                    return false
+                end
             end
         end
+
     end
 
     # All is OK!
@@ -527,63 +531,18 @@ end
 
 def tool_parse_command_line()
     parser = OptionParser.new() do |options|
-        options.on('-h', '--help', 'Displays this help message.') do ||
-            puts(options)
-        end
+        options.separator('')
+        options.separator('Mode:')
 
+        # Mode handling.
         options.on('-m mode', '--mode mode', 'Specifies the operational mode. [file, path, tape, tapeset]') do |mode|
             $state.mode = mode
         end
 
-        options.on('-a', '--add item', 'Adds the specified item.') do |item|
-            $state.action = 'add'
-            $state.items << item
-        end
-        options.on('-u', '--update item', 'Updates the specified item.') do |item|
-            $state.action = 'update'
-            $state.items << item
-        end
-        options.on('-r', '--remove item', 'Removes the specified item.') do |item|
-            $state.action = 'remove'
-            $state.items << item
-        end
-        options.on('-l', '--list [item]', 'Lists the specified item.') do |item|
-            $state.action = 'list'
-            $state.items << item if (item)
-        end
-        options.on('-i', '--info [item]', 'Displays info about the specified item.') do |item|
-            $state.action = 'info'
-            $state.items << item if (item)
-        end
-        options.on('-M', '--manifest tape', 'Displays the manifest of the specified tape.') do |tape|
-            $state.action = 'manifest'
-            $state.items << tape
-        end
-        options.on('-p', '--prune item', 'Prunes the specified item.') do |item|
-            $state.action = 'prune'
-            $state.items << item
-        end
-        options.on('-c', '--check item', 'Checks the specified item.') do |item|
-            $state.action = 'check'
-            $state.items << item
-        end
-        options.on('-w', '--write tape', 'Writes the specified tape.') do |tape|
-            $state.action = 'write'
-            $state.items << item
-        end
-        options.on('-e', '--erase tape', 'Erases the specified tape.') do |tape|
-            $state.action = 'erase'
-            $state.items << item
-        end
-        options.on('-V', '--verify tape', 'Verifies the specified tape.') do |tape|
-            $state.action = 'verify'
-            $state.items << item
-        end
+        options.separator('')
+        options.separator('Modifiers:')
 
-        options.on('-n', '--name name', 'Supplies the name of the tapeset.') do |name|
-            $state.name << name
-        end
-
+        # Modifiers handling.
         options.on('-v', '--verbose', 'Enables verbose mode.') do ||
             $state.verbose = true
         end
@@ -591,7 +550,7 @@ def tool_parse_command_line()
             $state.quiet = true
             $state.verbose = false
         end
-        options.on('-R', '--relative', 'Display paths as relative.') do ||
+        options.on('-R', '--relative', 'Use relative paths in manifest.') do ||
             $state.relative = true
         end
         options.on('-d', '--duplicates', 'Enables duplicates mode.') do ||
@@ -607,9 +566,60 @@ def tool_parse_command_line()
         options.on('-D', '--first-fit-decreasing', 'Use First Fit Decreasing algorithm for packing files onto tapes.') do ||
             $state.ffd = true
         end
+        options.on('-n', '--name', 'Supplies the name of the tapeset.') do |name|
+            $state.name << name
+        end
+
+        options.separator('')
+        options.separator('Actions:')
+
+        # Actions handling.
+        options.on('-a', '--add', 'Adds the specified item.') do ||
+            $state.action = 'add'
+        end
+        options.on('-u', '--update', 'Updates the specified item.') do ||
+            $state.action = 'update'
+        end
+        options.on('-r', '--remove', 'Removes the specified item.') do ||
+            $state.action = 'remove'
+        end
+        options.on('-l', '--list', 'Lists the specified item.') do ||
+            $state.action = 'list'
+        end
+        options.on('-i', '--info', 'Displays info about the specified item.') do ||
+            $state.action = 'info'
+        end
+        options.on('-M', '--manifest', 'Displays the manifest of the specified tape.') do ||
+            $state.action = 'manifest'
+        end
+        options.on('-p', '--prune', 'Prunes the specified item.') do ||
+            $state.action = 'prune'
+        end
+        options.on('-c', '--check', 'Checks the specified item.') do ||
+            $state.action = 'check'
+        end
+        options.on('-w', '--write', 'Writes the specified tape.') do ||
+            $state.action = 'write'
+        end
+        options.on('-e', '--erase', 'Erases the specified tape.') do ||
+            $state.action = 'erase'
+        end
+        options.on('-V', '--verify', 'Verifies the specified tape.') do ||
+            $state.action = 'verify'
+        end
+
+        options.separator('')
+        options.separator('Usage:')
+
+        # Show usage if no options specified.
+        options.on_tail('-h', '--help', 'Displays this help message.') do || 
+            puts(options) 
+        end
     end
     parser.parse!
-    $state.items.flatten!
+
+    # What is left over at this point are the items (if any).
+    $state.items = ARGV
 end
 
 def tool_add_files()
