@@ -725,8 +725,6 @@ def tool_prune_paths()
         files = db.execute("SELECT number, path FROM files WHERE path LIKE \"#{absolute_path}%\" AND on_disk=1")
         files.each() do |file|
             unless (File.file?(file[1]))
-                puts("#{file[1]} is no longer on disk.")
-
                 on_tape = db.get_first_value("SELECT COUNT (*) FROM file_tape_links WHERE file_number=#{file[0]}").to_i()
                 if (on_tape > 0)
                     db.execute("UPDATE files SET on_disk=0 WHERE number=#{file[0]}")
