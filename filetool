@@ -385,15 +385,17 @@ def tape_size(label)
     return size
 end
 
-def tape_exists(label)
+def tape_exists(label, error = false)
     if ($state.verbose)
-        puts "Tape record for #{label} exists."
+        e = error ? 'Error: ' : ''
+        puts "#{e}Tape record for #{label} exists."
     end
 end
 
-def tape_doesnt_exist(label)
+def tape_doesnt_exist(label, error = false)
     unless ($state.quiet)
-        puts("Tape record for #{label} does not exist.")
+        e = error ? 'Error: ' : ''
+        puts("#{e}Tape record for #{label} does not exist.")
     end
 end
 
@@ -425,6 +427,27 @@ def tapeset_added(name)
     end
 end
 
+def tapeset_removed(name)
+    $state.report.tapeset_removed += 1
+    if ($state.verbose)
+        puts "Tapeset record for #{name} removed."
+    end
+end
+
+def tapeset_exists(name, error = false)
+    if ($state.verbose || error)
+        e = error ? 'Error: ' : ''
+        puts "#{e}Tapeset record for #{name} exists." 
+    end
+end
+
+def tapeset_doesnt_exist(name, error = false)
+    if ($state.verbose || error)
+        e = error ? 'Error: ' : ''
+        puts("#{e}Tapeset record for #{name} doesnt exist.")
+    end
+end
+
 def file_tape_link_added(name, label)
     $state.report.link_added += 1
     if ($state.verbose)
@@ -432,13 +455,10 @@ def file_tape_link_added(name, label)
     end
 end
 
-def tapeset_exists(name, error = false)
-    if ($state.verbose) || error
-        e = ''
-        if (error)
-            e = 'Error: '
-        end
-        puts "#{e}Tapeset record for  #{name} exists." 
+def file_tape_link_removed(name, label)
+    $state.report.link_removed += 1
+    if ($state.verbose)
+        puts "File <-> tape link record for #{name}, #{label} removed."
     end
 end
 
@@ -580,7 +600,7 @@ def tool_parse_command_line()
             $state.ffd = true
         end
         options.on('-n', '--name', 'Supplies the name of the tapeset.') do |name|
-            $state.name << name
+            $state.name = name
         end
 
         options.separator('')
@@ -962,6 +982,19 @@ def tool_add_tapesets()
     end
 end
 
+def tool_remove_tapesets()
+    db = $state.db
+    $state.items.each() do |tapeset|
+        tapeset_number = db.get_first_value("SELECT number FROM tapesets WHERE name=\"#{tapeset}\"")
+        if (tapeset_number != nil)
+            puts(tapeset_number)
+
+        else
+            tapeset_doesnt_exist(tapeset)
+        end
+    end
+end
+
 def tool_list_tapesets()
     query = 'SELECT name FROM tapesets'
     if ($state.items.length() > 0)
@@ -1060,6 +1093,8 @@ begin
             case $state.action
             when 'add'
                 tool_add_tapesets()
+            when 'remove'
+                tool_remove_tapesets()
             when 'list'
                 tool_list_tapesets()
             when 'info'
