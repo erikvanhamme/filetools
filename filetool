@@ -391,10 +391,23 @@ def tape_exists(label)
     end
 end
 
+def tape_doesnt_exist(label)
+    unless ($state.quiet)
+        puts("Tape record for #{label} does not exist.")
+    end
+end
+
 def tape_added(label)
     $state.report.tape_added += 1
     if ($state.verbose)
         puts("Tape record for #{label} added.")
+    end
+end
+
+def tape_removed(label)
+    $state.report.tape_removed += 1
+    if ($state.verbose)
+        puts("Tape record for #{label} removed.")
     end
 end
 
@@ -689,6 +702,24 @@ def tool_add_tapes()
             tape_added(label)
         else
             tape_exists(label)
+        end
+    end
+end
+
+def tool_remove_tapes()
+    db = $state.db
+    $state.items.each() do |label|
+        tapes = db.execute("SELECT tapeset FROM tapes WHERE label=\"#{label}\"")
+        if (tapes.length() > 0)
+            if (tapes[0][0] != -1)
+                tapeset = db.get_first_value("SELECT name FROM tapesets WHERE number=#{tapes[0][0]}")
+                puts("Error: Cannot remove tape #{label} because it is part of tapeset: #{tapeset}.")
+            else
+                db.execute("DELETE FROM tapes WHERE label=\"#{label}\"")
+                tape_removed(label)
+            end
+        else
+            tape_doesnt_exist(label)
         end
     end
 end
@@ -1013,6 +1044,8 @@ begin
             case $state.action
             when 'add'
                 tool_add_tapes()
+            when 'remove'
+                tool_remove_tapes()
             when 'list'
                 tool_list_tapes()
             when 'info'
