@@ -427,6 +427,13 @@ def tapeset_added(name)
     end
 end
 
+def tapeset_updated(name)
+    $state.report.tapeset_updated += 1
+    if ($state.verbose)
+        puts "Tapeset record for #{name} updated."
+    end
+end
+
 def tapeset_removed(name)
     $state.report.tapeset_removed += 1
     if ($state.verbose)
@@ -484,7 +491,7 @@ def tool_check_command_line(command_line)
         'file' => %w[manifest prune write erase verify], \
         'path' => %w[manifest write erase verify], \
         'tape' => %w[update prune check], \
-        'tapeset' => %w[update manifest prune check write erase verify] \
+        'tapeset' => %w[manifest prune check write erase verify] \
     }
     if (illegal[$state.mode] == nil)
         puts("Error: Unsupported mode #{$state.mode} specified.")
@@ -508,6 +515,9 @@ def tool_check_command_line(command_line)
     when 'add', 'update', 'remove', 'prune', 'check'
         min = 1
         max = -1
+        if (($state.mode == 'tapeset') && ($state.action == 'update'))
+            max = 1
+        end
     when 'list', 'info'
         min = 0
         max = -1
@@ -555,7 +565,6 @@ def tool_check_command_line(command_line)
                 end
             end
         end
-
     end
 
     # All is OK!
@@ -982,15 +991,52 @@ def tool_add_tapesets()
     end
 end
 
+def tool_update_tapesets()
+    db = $state.db
+
+    in_db = db.get_first_value("SELECT COUNT (*) FROM tapesets WHERE name=\"#{$state.items[0]}\"")
+    if (in_db > 0)
+        db.execute("UPDATE tapesets SET name=\"#{$state.name}\" WHERE name=\"#{$state.items[0]}\"")
+        tapeset_updated($state.items[0])
+    else
+        tapeset_doesnt_exist($state.items[0], true)
+    end
+end
+
 def tool_remove_tapesets()
     db = $state.db
     $state.items.each() do |tapeset|
-        tapeset_number = db.get_first_value("SELECT number FROM tapesets WHERE name=\"#{tapeset}\"")
-        if (tapeset_number != nil)
-            puts(tapeset_number)
+        # Fetch the needed data for the operation from the database.
+        data = db.execute("SELECT tapesets.number, tapesets.name, tapes.number, tapes.label, files.number, files.path, files.on_disk FROM tapesets LEFT JOIN tapes ON tapes.tapeset=tapesets.number LEFT JOIN file_tape_links ON file_tape_links.tape_number=tapes.number LEFT JOIN files ON files.number=file_tape_links.file_number WHERE tapesets.name=\"#{tapeset}\"")
 
+        if (data.length() > 0)
+            tape_number = -1
+            data.each() do |row|
+                # Update the tape if it has not been updated before.
+                if (row[2] != tape_number)
+                    tape_number = row[2]
+                    db.execute("UPDATE tapes SET tapeset=-1, tapeset_idx=-1 WHERE number=#{tape_number}")
+                    tape_updated(row[3])
+                end
+
+                # Remove the file <-> tape link.
+                db.execute("DELETE FROM file_tape_links WHERE tape_number=#{row[2]} AND file_number=#{row[4]}")
+                file_tape_link_removed(row[3], row[5])
+
+                # If no longer on disk, we must check if the file is member of other tapesets. If not, delete it.
+                if (row[6] == 0)
+                    in_other_tapesets = db.get_first_value("SELECT COUNT (*) FROM file_tape_links WHERE file_number=#{row[4]}").to_i()
+                    if (in_other_tapesets == 0)
+                        db.execute("DELETE FROM files WHERE number=#{row[4]}")
+                        file_removed(row[5])
+                    end
+                end
+            end
+
+            db.execute("DELETE FROM tapesets WHERE name=\"#{tapeset}\"")
+            tapeset_removed(tapeset)
         else
-            tapeset_doesnt_exist(tapeset)
+            tapeset_doesnt_exist(tapeset, true)
         end
     end
 end
@@ -1093,6 +1139,8 @@ begin
             case $state.action
             when 'add'
                 tool_add_tapesets()
+            when 'update'
+                tool_update_tapesets()
             when 'remove'
                 tool_remove_tapesets()
             when 'list'
