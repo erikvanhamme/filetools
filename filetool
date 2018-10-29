@@ -852,7 +852,6 @@ def tool_add_tapesets()
 
     error = false
     files = nil
-    no_filter = true
     set_count = 1
     tapeset_names = []
     
@@ -896,26 +895,17 @@ def tool_add_tapesets()
         accumulator = 0
 
         # Build the selection query.
-        query = 'SELECT * FROM files'
-        first = true
-        unless (no_filter)
-            query += ' WHERE'
-            argv.each() do |arg|
-                if (first)
-                    query += " (path LIKE \"#{arg}%\""
-                    first = false
-                else
-                    query += " OR path LIKE \"#{arg}%\""
-                end
-            end
-            query += ') AND latest=1 AND deleted=0'
+        query = 'SELECT * FROM files WHERE ('
+        $state.items.each() do |item|
+            query += "path LIKE \"#{item}%\" OR "
         end
+        query.chomp!(' OR ')
+        query += ') AND (on_disk=1)'
         if ($state.ffd)
             query += ' ORDER BY size DESC'
         else
             query += ' ORDER BY path ASC'
         end
-
         files = db.execute(query)
         if (files.length() == 0)
             puts("Error: No files matched the selection criteria.")
