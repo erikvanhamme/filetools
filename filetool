@@ -73,7 +73,7 @@ end
 
 class State
     attr_accessor :db, :version, :db_version, :report, :mode, :action
-    attr_accessor :verbose, :quiet, :relative, :duplicates, :items, :incompatible, :double, :triple, :name, :ffd
+    attr_accessor :verbose, :quiet, :relative, :duplicates, :items, :incompatible, :double, :triple, :name, :ffd, :async
 
     def initialize()
         @db = nil
@@ -95,6 +95,7 @@ class State
         @double = false
         @triple = false
         @ffd = false
+        @async = false
 
         @name = ''
     end
@@ -222,6 +223,10 @@ def db_init()
     db = SQLite3::Database.new("filetool.db")
     $state.db = db
 
+    if ($state.async)
+        db.execute('PRAGMA synchronous = OFF')
+    end
+
     if (db_empty?)
         db_create_schema()
     else
@@ -233,6 +238,9 @@ def db_init()
     end
 
     unless ($state.quiet)
+        if ($state.async)
+            puts('  Database in asynchronous mode.')
+        end
         puts('  ' + db.get_first_value('SELECT COUNT(*) FROM files').to_s + ' file records in database.')
         puts('  ' + db.get_first_value('SELECT COUNT(*) FROM tapes').to_s + ' tape records in database.')
         puts('  ' + db.get_first_value('SELECT COUNT(*) FROM tapesets').to_s + ' tape set records in database.')
@@ -561,7 +569,8 @@ def tool_check_command_line(command_line)
         end
 
         # Check if all items are valid paths if in path mode. (or when adding in tapeset mode.)
-        if (($state.mode == 'path') || (($state.mode == 'tapeset') && ($state.action == 'add')))
+#        if (($state.mode == 'path') || (($state.mode == 'tapeset') && ($state.action == 'add')))
+        if ($state.mode == 'path')
             $state.items.each() do |path|
                 unless (File.directory?(path))
                     puts("Error: Incorrect path name: #{path}")
@@ -624,6 +633,9 @@ def tool_parse_command_line()
         end
         options.on('-n', '--name name', 'Supplies the name of the tapeset.') do |name|
             $state.name = name
+        end
+        options.on('-A', '--async', 'Runs database in asynchronous mode. WARNING unsafe if PC crashes or loses power!') do ||
+            $state.async = true
         end
 
         options.separator('')
@@ -944,7 +956,6 @@ def tool_add_tapesets()
         file_count = files.length()
         for i in 0..(file_count - 1)
             file_size = files[i][2]
-            tape = 0
             stored = false
             for j in 0..(tapes_needed - 1)
                 if (tape_bytes_left[j] > file_size)
@@ -955,7 +966,8 @@ def tool_add_tapesets()
                 end
             end
             unless (stored)
-                puts("Error: Failed to store file idx(#{i}). All tapes are full.")
+                puts(tape_bytes_left.to_s())
+                puts("Error: Failed to store file #{files[i][4]} (#{files[i][2]} bytes). All tapes are full.")
                 error = true
             end
         end
