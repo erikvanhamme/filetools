@@ -913,8 +913,12 @@ def tool_write_tapes()
         script_file.puts('#!/bin/bash')
         script_file.puts("echo \"Writing tape #{label}.\"")
         script_file.puts("mt-st -f #{$state.device} compression 0")
-        script_file.puts("tar -c -f #{$state.device} -b 8192 -T filelist.txt")
-        script_file.puts("mt-st -f #{$state.device} rewofl")
+        if ($state.verbose)
+            script_file.puts("tar -c -v -f #{$state.device} -b 8192 -T filelist.txt")
+        else
+            script_file.puts("tar -c -f #{$state.device} -b 8192 -T filelist.txt")
+        end
+        script_file.puts("mt-st -f #{$state.device} rewoffl")
         script_file.puts('Done.')
         
         FileUtils.chmod('u+x', 'write.sh')
