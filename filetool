@@ -499,10 +499,10 @@ def tool_check_command_line(command_line)
 
     # Check mode, and if actions are allowed in the mode.
     illegal = { \
-        'file' => %w[manifest prune write erase verify], \
-        'path' => %w[manifest write erase verify], \
+        'file' => %w[manifest prune scripts], \
+        'path' => %w[manifest scripts], \
         'tape' => %w[update prune check], \
-        'tapeset' => %w[manifest prune check write erase verify] \
+        'tapeset' => %w[manifest prune check scripts] \
     }
     if (illegal[$state.mode] == nil)
         puts("Error: Unsupported mode #{$state.mode} specified.")
@@ -513,7 +513,7 @@ def tool_check_command_line(command_line)
     end
 
     # Check action.
-    legal = %w[add update remove list info manifest prune check write erase verify]
+    legal = %w[add update remove list info manifest prune check scripts]
     unless (legal.include?($state.action))
         puts("Error: Unsupported action #{$state.action} specified.")
         return false
@@ -523,7 +523,7 @@ def tool_check_command_line(command_line)
     min = 0
     max = 0
     case $state.action
-    when 'add', 'update', 'remove', 'prune', 'check'
+    when 'add', 'update', 'remove', 'prune', 'check', 'scripts'
         min = 1
         max = -1
         if (($state.mode == 'tapeset') && ($state.action == 'update'))
@@ -532,7 +532,7 @@ def tool_check_command_line(command_line)
     when 'list', 'info'
         min = 0
         max = -1
-    when 'manifest', 'write', 'erase', 'verify'
+    when 'manifest'
         min = 1
         max = 1
     end
@@ -579,10 +579,14 @@ def tool_check_command_line(command_line)
     end
 
     # Check if device is set properly when in tape mode and write, erase or verify is selected.
-    actions = %w[write erase verify]
+    actions = %w[scripts]
     if (($state.mode == 'tape') && (actions.include?($state.action)))
-        unless (File.writable?($state.device))
+        if ($state.device.empty?())
             puts ("Error: No tape streamer device specified.")
+            return false
+        end
+        unless (File.writable?($state.device))
+            puts ("Error: Invalid tape streamer device specified.")
             return false
         end
     end
@@ -666,14 +670,8 @@ def tool_parse_command_line()
         options.on('-c', '--check', 'Checks the specified item.') do ||
             $state.action = 'check'
         end
-        options.on('-w', '--write-scripts', 'Creates the write scripts for the tape.') do ||
-            $state.action = 'write'
-        end
-        options.on('-e', '--erase-scripts', 'Creates the erase scripts for the tape.') do ||
-            $state.action = 'erase'
-        end
-        options.on('-V', '--verify-scripts', 'Creates the verify scripts for the tape.') do ||
-            $state.action = 'verify'
+        options.on('-s', '--scripts', 'Creates the write, erase and verify scripts for the tape.') do ||
+            $state.action = 'scripts'
         end
 
         options.separator('')
@@ -859,64 +857,70 @@ def tool_manifest_tapes()
     end
 end    
 
-def tool_write_tapes()
-    label = $state.items[0]
-    puts("Writing tape #{label}")
-
-    # Get the file data of the involved files.
+def tool_scripts_tapes()
     db = $state.db
-    all_files = db.execute("SELECT path, sha1, on_disk FROM files LEFT JOIN file_tape_links ON file_tape_links.file_number = files.number LEFT JOIN tapes ON tapes.number = file_tape_links.tape_number WHERE tapes.label=\"#{label}\" ORDER BY files.path ASC")
-    
-    # Warn if files are no longer on disk. Could be that the tapeset was created long ago and is being re-written after some files have been removed. In this case we will exclude them from the tape. Exclude these from the write list at this point.
-    write_files = []
-    all_files.each() do |file|
-        if (file[2] == 0)
-            puts("Warning: File #{file[0]} is no longer on disk, writing the tape without it.")
-        else
-            write_files << file
-        end
-    end
-
-    begin
-        # Start by writing the manifest, checksums and filelist files.
-        manifest_file = File.open('manifest.txt', 'w')
-        checksums_file = File.open('checksums.txt', 'w')
-        filelist_file = File.open('filelist.txt', 'w')
-
-        filelist_file.puts('manifest.txt')
-        filelist_file.puts('checksums.txt')
-
-        write_files.each() do |file|
-            relative_path = Pathname.new(file[0]).relative_path_from(Pathname.new(File.expand_path(File.dirname(__FILE__)))).to_s()
-
-            manifest_file.puts(relative_path)
-            filelist_file.puts(relative_path)
-            checksums_file.puts("#{file[1]}  #{relative_path}")
+    $state.items.each() do |label|
+        unless ($state.quiet)
+            puts("Writing tape scripts for tape: #{label}")
         end
 
-        # Then produce actual write script.
-        script_file = File.open('write.sh', 'w')
-        script_file.puts('#!/bin/bash')
-        script_file.puts("echo \"Writing tape #{label}.\"")
-        script_file.puts("mt-st -f #{$state.device} compression 0")
-        if ($state.verbose)
-            script_file.puts("tar -c -v -f #{$state.device} -b 8192 -T filelist.txt")
-        else
-            script_file.puts("tar -c -f #{$state.device} -b 8192 -T filelist.txt")
-        end
-        script_file.puts("mt-st -f #{$state.device} rewoffl")
-        script_file.puts("echo \"Done.\"")
+        # Get the file data of the involved files.
+        all_files = db.execute("SELECT path, sha1, on_disk FROM files LEFT JOIN file_tape_links ON file_tape_links.file_number = files.number LEFT JOIN tapes ON tapes.number = file_tape_links.tape_number WHERE tapes.label=\"#{label}\" ORDER BY files.path ASC")
         
-        FileUtils.chmod('u+x', 'write.sh')
-    rescue IOError => e
-        puts('IOError:')
-        puts(e)
-        error = true
-    ensure
-        manifest_file.close() unless manifest_file.nil?
-        checksums_file.close() unless checksums_file.nil?
-        filelist_file.close() unless filelist_file.nil?
-        script_file.close() unless script_file.nil?
+        # Warn if files are no longer on disk. Could be that the tapeset was created long ago and is being re-written after some files have been removed. In this case we will exclude them from the tape. Exclude these from the write list at this point.
+        write_files = []
+        all_files.each() do |file|
+            if (file[2] == 0)
+                puts("Warning: File #{file[0]} is no longer on disk, writing the tape without it.")
+            else
+                write_files << file
+            end
+        end
+
+        begin
+            # Start by writing the manifest, checksums and filelist files.
+            manifest_file = File.open("manifest_#{label}.txt", 'w')
+            checksums_file = File.open("checksums_#{label}.txt", 'w')
+            filelist_file = File.open("filelist_#{label}.txt", 'w')
+
+            filelist_file.puts('manifest.txt')
+            filelist_file.puts('checksums.txt')
+
+            write_files.each() do |file|
+                relative_path = Pathname.new(file[0]).relative_path_from(Pathname.new(File.expand_path(File.dirname(__FILE__)))).to_s()
+
+                manifest_file.puts(relative_path)
+                filelist_file.puts(relative_path)
+                checksums_file.puts("#{file[1]}  #{relative_path}")
+            end
+
+            # Then produce actual write script.
+            script_file = File.open("write_#{label}.sh", 'w')
+            script_file.puts('#!/bin/bash')
+            script_file.puts("echo \"Writing tape #{label}.\"")
+            script_file.puts("cp manifest_#{label}.txt manifest.txt")
+            script_file.puts("cp checksum_#{label}.txt checksum.txt")
+            script_file.puts("mt-st -f #{$state.device} compression 0")
+            if ($state.verbose)
+                script_file.puts("tar -c -v -f #{$state.device} -b 8192 -T filelist.txt")
+            else
+                script_file.puts("tar -c -f #{$state.device} -b 8192 -T filelist.txt")
+            end
+            script_file.puts("mt-st -f #{$state.device} rewoffl")
+            script_file.puts('rm manifest.txt checksum.txt')
+            script_file.puts("echo \"Done.\"")
+            
+            FileUtils.chmod('u+x', "write_#{label}.sh")
+        rescue IOError => e
+            puts('IOError:')
+            puts(e)
+            error = true
+        ensure
+            manifest_file.close() unless manifest_file.nil?
+            checksums_file.close() unless checksums_file.nil?
+            filelist_file.close() unless filelist_file.nil?
+            script_file.close() unless script_file.nil?
+        end
     end
 end
 
@@ -1225,8 +1229,8 @@ begin
                 tool_info_tapes()
             when 'manifest'
                 tool_manifest_tapes()
-            when 'write'
-                tool_write_tapes()
+            when 'scripts'
+                tool_scripts_tapes()
             end
         end
 
