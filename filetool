@@ -264,15 +264,17 @@ def file_sha1(absolute_path)
     sha1.hexdigest()
 end
 
-def file_exists(file)
+def file_exists(file, error = false)
     if ($state.verbose)
-        puts("File record for #{file} exists.")
+        e = error ? 'Error: ' : ''
+        puts("#{e}File record for #{file} exists.")
     end
 end
 
-def file_doesnt_exist(file)
+def file_doesnt_exist(file, error = false)
     unless ($state.quiet)
-        puts("File record for #{file} does not exist.")
+        e = error ? 'Error: ' : ''
+        puts("#{e}File record for #{file} does not exist.")
     end
 end
 
@@ -365,22 +367,6 @@ def file_remove(file)
             db.execute("DELETE FROM files WHERE number=#{file_num}")
             file_removed(absolute_path)
         end
-    else
-        puts("Error: #{absolute_path} appears multiple times as latest file in database.")
-    end
-end
-
-# TODO: Figure out if this one is needed. Noone calls it.
-def file_view(file)
-    db = $state.db
-    absolute_path = File.expand_path(file)
-
-    files = db.execute("SELECT * FROM files WHERE path=\"#{absolute_path}\" AND on_disk=1")
-    if (files.length() == 0)
-        file_doesnt_exist(absolute_path)
-    elsif (files.length() == 1)
-        file_num = file[0]
-        puts("  #{file[4]} #{file[2]}"); # TODO: Complete display.
     else
         puts("Error: #{absolute_path} appears multiple times as latest file in database.")
     end
