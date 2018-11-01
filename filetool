@@ -25,53 +25,6 @@ require 'table_print'
 #-------------------------------------------------------------------------------
 # Class definitions
 
-class Report
-    attr_accessor :file_added, :file_updated, :file_removed
-    attr_accessor :tape_added, :tape_updated, :tape_removed
-    attr_accessor :tapeset_added, :tapeset_updated, :tapeset_removed
-    attr_accessor :link_added, :link_updated, :link_removed
-
-    def initialize()
-        @file_added = 0
-        @file_updated = 0
-        @file_removed = 0
-
-        @tape_added = 0
-        @tape_updated = 0
-        @tape_removed = 0
-
-        @tapeset_added = 0
-        @tapeset_updated = 0
-        @tapeset_removed = 0
-
-        @link_added = 0
-        @link_updated = 0
-        @link_removed = 0
-    end
-
-    def report()
-        sum = 0
-        sum += @file_added + @file_updated + @file_removed
-        sum += @tape_added + @tape_updated + @tape_removed
-        sum += @tapeset_added + @tapeset_updated + @tapeset_removed
-        sum += @link_added + @link_updated + @link_removed
-        puts("Report:")
-        puts("  #{@file_added} file records added.") if @file_added > 0
-        puts("  #{@file_updated} file records updated.") if @file_updated > 0
-        puts("  #{@file_removed} file records removed.") if @file_removed > 0
-        puts("  #{@tape_added} tape records added.") if @tape_added > 0
-        puts("  #{@tape_updated} tape records updated.") if @tape_updated > 0
-        puts("  #{@tape_removed} tape records removed.") if @tape_removed > 0
-        puts("  #{@tapeset_added} tapeset records added.") if @tapeset_added > 0
-        puts("  #{@tapeset_updated} tapeset records updated.") if @tapeset_updated > 0
-        puts("  #{@tapeset_removed} tapeset records removed.") if @tapeset_removed > 0
-        puts("  #{@link_added} file <-> tape link records added.") if @link_added > 0
-        puts("  #{@link_updated} file <-> tape link records updated.") if @link_updated > 0
-        puts("  #{@link_removed} file <-> tape link records removed.") if @link_removed > 0
-        puts('  No database modifications.') if sum == 0
-    end
-end
-
 class State
     attr_accessor :db, :version, :db_version, :report, :mode, :action
     attr_accessor :verbose, :quiet, :relative, :duplicates, :items, :incompatible 
@@ -81,7 +34,6 @@ class State
         @db = nil
         @version = 1
         @db_version = 1
-        @report = Report.new()
         @mode = ''
         @action = ''
         
@@ -104,75 +56,59 @@ class State
     end
 end
 
-#-------------------------------------------------------------------------------
+#-----------------------------------------------------------------------------------------------------------------------
 # Global vars section
+
+$report = { :f_add => 0, :f_up => 0, :f_rm => 0, :t_add => 0, :t_up => 0, :t_rm => 0, :s_add => 0, :s_up => 0, 
+    :s_rm => 0, :l_add => 0, :l_rm => 0 }
 
 $state = State.new()
 
-#-------------------------------------------------------------------------------
+#-----------------------------------------------------------------------------------------------------------------------
 # DB method section
 
-def db_empty?()
-    db = $state.db
-
+def db_empty?(db)
     version_table = db.execute('SELECT name FROM sqlite_master WHERE type="table" AND name="version"')
-
-    version_table.length == 0
+    version_table.length() == 0
 end
 
-def db_create_version_table()
-    db = $state.db
-
+def db_create_version_table(db)
     db.execute('CREATE TABLE version(version INTEGER NOT NULL, db_version INTEGER NOT NULL)')
-
     db.execute("INSERT INTO version(version, db_version) VALUES(#{$state.version}, #{$state.db_version})")
 end
 
-def db_create_files_table()
-    db = $state.db
-    
-	db.execute('CREATE TABLE IF NOT EXISTS files(number INTEGER PRIMARY KEY, 
-        sha1 TEXT, size INTEGER, mtime INTEGER, path TEXT, on_disk INTEGER)')
-
+def db_create_files_table(db)
+	db.execute('CREATE TABLE IF NOT EXISTS files(number INTEGER PRIMARY KEY, sha1 TEXT, size INTEGER, mtime INTEGER, 
+        path TEXT, on_disk INTEGER)')
 	db.execute('CREATE INDEX IF NOT EXISTS files_sha1 ON files(sha1)')
 	db.execute('CREATE INDEX IF NOT EXISTS files_path ON files(path)')
 end
 
-def db_create_tapes_table()
-    db = $state.db
-    
-    db.execute('CREATE TABLE IF NOT EXISTS tapes(number INTEGER PRIMARY KEY,
-        label TEXT, size INTEGER, tapeset INTEGER, tapeset_idx INTEGER)')
+def db_create_tapes_table(db)
+    db.execute('CREATE TABLE IF NOT EXISTS tapes(number INTEGER PRIMARY KEY, label TEXT, size INTEGER, tapeset INTEGER, 
+        tapeset_idx INTEGER)')
 end
 
-def db_create_tapesets_table()
-    db = $state.db
-    
-    db.execute('CREATE TABLE IF NOT EXISTS tapesets(number INTEGER PRIMARY KEY,
-        name TEXT UNIQUE, tape_count INTEGER)')
+def db_create_tapesets_table(db)
+    db.execute('CREATE TABLE IF NOT EXISTS tapesets(number INTEGER PRIMARY KEY, name TEXT UNIQUE, tape_count INTEGER)')
 end
 
-def db_create_file_tape_links_table()
-    db = $state.db
-    
-    db.execute('CREATE TABLE IF NOT EXISTS file_tape_links(file_number INTEGER, 
-        tape_number INTEGER)')
+def db_create_file_tape_links_table(db)
+    db.execute('CREATE TABLE IF NOT EXISTS file_tape_links(file_number INTEGER, tape_number INTEGER)')
 end
 
-def db_create_schema()
+def db_create_schema(db)
     unless ($state.quiet)
         puts('Initializing new database.')
     end
-    db_create_version_table()
-    db_create_files_table()
-    db_create_tapes_table()
-    db_create_tapesets_table()
-    db_create_file_tape_links_table()
+    db_create_version_table(db)
+    db_create_files_table(db)
+    db_create_tapes_table(db)
+    db_create_tapesets_table(db)
+    db_create_file_tape_links_table(db)
 end
 
-def db_increment_schema(current)
-    db = $state.db
-
+def db_increment_schema(db, current)
     unless ($state.quiet)
         puts("Updating database schema from V#{current}.")
     end
@@ -190,9 +126,7 @@ def db_increment_schema(current)
     return current
 end
 
-def db_update_schema()
-    db = $state.db
-    
+def db_update_schema(db)
     versions = db.execute('SELECT * FROM version')
     version_in_db = versions[0][0]
     db_version_in_db = versions[0][1]
@@ -206,49 +140,41 @@ def db_update_schema()
     end
 end
 
-def db_check_schema()
-    db = $state.db
-    
+def db_check_schema(db)
     versions = db.execute('SELECT * FROM version')
     version_in_db = versions[0][0]
     db_version_in_db = versions[0][1]
 
-    if (version_in_db > $state.version) || (db_version_in_db > $state.db_version)
+    if ((version_in_db > $state.version) || (db_version_in_db > $state.db_version))
         puts('Error: Database was created with higher code or database version of the tools.')
         $state.incompatible = true
         return
     end
     
-    db_update_schema()
+    db_update_schema(db)
 end
 
 def db_init()
     db = SQLite3::Database.new("filetool.db")
-    $state.db = db
+    db.execute('PRAGMA synchronous = OFF') if ($state.async)
 
-    if ($state.async)
-        db.execute('PRAGMA synchronous = OFF')
-    end
-
-    if (db_empty?)
-        db_create_schema()
+    if (db_empty?(db))
+        db_create_schema(db)
     else
-        db_check_schema()
+        db_check_schema(db)
     end
+    
+    exit(-1) if ($state.incompatible)
 
-    if ($state.incompatible)
-        exit(-1)
+    if ($state.verbose)
+        puts('Database in asynchronous mode.') if ($state.async)
+        data = [{:files => db.get_first_value('SELECT COUNT(*) FROM files'), 
+            :tapes => db.get_first_value('SELECT COUNT(*) FROM tapes'), 
+            :tapesets => db.get_first_value('SELECT COUNT(*) FROM tapesets'), 
+            :links => db.get_first_value('SELECT COUNT(*) FROM file_tape_links')}]
+        tp(data, data[0].keys)
     end
-
-    unless ($state.quiet)
-        if ($state.async)
-            puts('  Database in asynchronous mode.')
-        end
-        puts('  ' + db.get_first_value('SELECT COUNT(*) FROM files').to_s + ' file records in database.')
-        puts('  ' + db.get_first_value('SELECT COUNT(*) FROM tapes').to_s + ' tape records in database.')
-        puts('  ' + db.get_first_value('SELECT COUNT(*) FROM tapesets').to_s + ' tape set records in database.')
-        puts('  ' + db.get_first_value('SELECT COUNT(*) FROM file_tape_links').to_s + ' file <-> tape link records in database.')
-    end
+    db
 end
 
 #-------------------------------------------------------------------------------
@@ -279,21 +205,21 @@ def file_doesnt_exist(file, error = false)
 end
 
 def file_added(file)
-    $state.report.file_added += 1
+    $report[:f_add] += 1
     if ($state.verbose)
         puts("File record for #{file} added.")
     end
 end
 
 def file_removed(file)
-    $state.report.file_removed += 1
+    $report[:f_rm] += 1
     if ($state.verbose)
         puts("File record for #{file} removed.")
     end
 end
 
 def file_updated(file)
-    $state.report.file_updated += 1
+    $report[:f_up] += 1
     if ($state.verbose)
         puts("File record for #{file} updated.")
     end
@@ -411,42 +337,42 @@ def tape_doesnt_exist(label, error = false)
 end
 
 def tape_added(label)
-    $state.report.tape_added += 1
+    $report[:t_add] += 1
     if ($state.verbose)
         puts("Tape record for #{label} added.")
     end
 end
 
-def tape_removed(label)
-    $state.report.tape_removed += 1
-    if ($state.verbose)
-        puts("Tape record for #{label} removed.")
-    end
-end
-
 def tape_updated(label)
-    $state.report.tape_updated += 1
+    $report[:t_up] += 1
     if ($state.verbose)
         puts "Tape record for #{label} updated."
     end
 end
 
+def tape_removed(label)
+    $report[:t_rm] += 1
+    if ($state.verbose)
+        puts("Tape record for #{label} removed.")
+    end
+end
+
 def tapeset_added(name)
-    $state.report.tapeset_added += 1
+    $report[:s_add] += 1
     if ($state.verbose)
         puts "Tapeset record for #{name} added."
     end
 end
 
 def tapeset_updated(name)
-    $state.report.tapeset_updated += 1
+    $report[:s_up] += 1
     if ($state.verbose)
         puts "Tapeset record for #{name} updated."
     end
 end
 
 def tapeset_removed(name)
-    $state.report.tapeset_removed += 1
+    $report[:s_rm] += 1
     if ($state.verbose)
         puts "Tapeset record for #{name} removed."
     end
@@ -467,14 +393,14 @@ def tapeset_doesnt_exist(name, error = false)
 end
 
 def file_tape_link_added(name, label)
-    $state.report.link_added += 1
+    $report[:l_add] += 1
     if ($state.verbose)
         puts "File <-> tape link record for #{name}, #{label} added."
     end
 end
 
 def file_tape_link_removed(name, label)
-    $state.report.link_removed += 1
+    $report[:l_rm] += 1
     if ($state.verbose)
         puts "File <-> tape link record for #{name}, #{label} removed."
     end
@@ -1182,6 +1108,14 @@ def tool_info_tapesets()
     tp(info, :name, :tape, :volume)
 end
 
+def tool_report(r)
+    if ((r.values.inject(0) do |sum, x| sum + x end) > 0)
+        tp([r], r.keys)
+    else
+        puts('No Database modifications.')
+    end
+end
+
 begin
     # Parse command line and check if all is correct.
     error = !tool_check_command_line(tool_parse_command_line())
@@ -1192,7 +1126,7 @@ begin
     end
 
     unless (error)
-        db_init()
+        $state.db = db_init()
 
         # Handle file mode.
         if ($state.mode == 'file')
@@ -1258,7 +1192,7 @@ begin
 
         # Generate report at end of execution.
         unless ($state.quiet)
-            $state.report.report()
+            tool_report($report)
         end
     end
 rescue SQLite3::Exception => e 
