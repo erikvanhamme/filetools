@@ -919,7 +919,7 @@ def tool_write_tapes()
             script_file.puts("tar -c -f #{$state.device} -b 8192 -T filelist.txt")
         end
         script_file.puts("mt-st -f #{$state.device} rewoffl")
-        script_file.puts('Done.')
+        script_file.puts("echo \"Done.\"")
         
         FileUtils.chmod('u+x', 'write.sh')
     rescue IOError => e
