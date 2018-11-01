@@ -501,7 +501,7 @@ def tool_check_command_line(command_line)
     illegal = { \
         'file' => %w[manifest prune scripts], \
         'path' => %w[manifest scripts], \
-        'tape' => %w[update prune check], \
+        'tape' => %w[prune check], \
         'tapeset' => %w[manifest prune check scripts] \
     }
     if (illegal[$state.mode] == nil)
@@ -520,22 +520,8 @@ def tool_check_command_line(command_line)
     end
 
     # Check if correct number of items is specified.
-    min = 0
-    max = 0
-    case $state.action
-    when 'add', 'update', 'remove', 'prune', 'check', 'scripts'
-        min = 1
-        max = -1
-        if (($state.mode == 'tapeset') && ($state.action == 'update'))
-            max = 1
-        end
-    when 'list', 'info'
-        min = 0
-        max = -1
-    when 'manifest'
-        min = 1
-        max = 1
-    end
+    min = (($state.action == 'list') || ($state.action == 'info')) ? 0 : 1
+    max = (($state.action == 'update') && (($state.mode == 'tape') || ($state.mode == 'tapeset'))) ? 1 : -1
     if ($state.items.length() < min)
         puts("Error: At least #{min} items must be specified.")
         return false
@@ -582,12 +568,19 @@ def tool_check_command_line(command_line)
     actions = %w[scripts]
     if (($state.mode == 'tape') && (actions.include?($state.action)))
         if ($state.device.empty?())
-            puts ("Error: No tape streamer device specified.")
+            puts('Error: No tape streamer device specified.')
             return false
         end
         unless (File.writable?($state.device))
-            puts ("Error: Invalid tape streamer device specified.")
+            puts("Error: Invalid tape streamer device specified : #{$state.name}.")
             return false
+        end
+    end
+
+    # Check target name if renaming a tape.
+    if (($state.mode == 'tape') && ($state.action == 'update'))
+        unless (tape_valid_label?($state.name))
+            puts("Error: Invalid tape name specified: #{$state.name}.")
         end
     end
 
@@ -773,6 +766,17 @@ def tool_add_tapes()
         else
             tape_exists(label)
         end
+    end
+end
+
+def tool_update_tapes()
+    db = $state.db
+    present_in_db = db.get_first_value("SELECT COUNT(*) FROM tapes WHERE label=\"#{$state.name}\"").to_i()
+    if (present_in_db == 0)
+        db.execute("UPDATE tapes SET label=\"#{$state.name}\" WHERE label=\"#{$state.items[0]}\"")
+        tape_updated($state.items[0])
+    else
+        tape_exists(label, true)
     end
 end
 
@@ -1221,6 +1225,8 @@ begin
             case $state.action
             when 'add'
                 tool_add_tapes()
+            when 'update'
+                tool_update_tapes()
             when 'remove'
                 tool_remove_tapes()
             when 'list'
