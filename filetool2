@@ -61,7 +61,7 @@ class Report
     end
 
     def db_exception(exception)
-        puts(exception.to_s())
+        error('SQL exception: ' + exception.to_s())
     end
 
     def file_added(absolute_path)
@@ -98,6 +98,21 @@ class Report
         puts("Tape #{label} removed.") if (@verbose)
     end
 
+    def tapeset_added(name)
+        @r[:s_add] += 1
+        puts("Tapeset #{name} added.") if (@verbose)
+    end
+
+    def tapeset_updated(name)
+        @r[:s_up] += 1
+        puts("Tapeset #{name} updated.") if (@verbose)
+    end
+
+    def tapeset_removed(name)
+        @r[:s_rm] += 1
+        puts("Tapeset #{name} removed.") if (@verbose)
+    end
+
     def finalize()
         if (@verbose)
             if ((@r.values.inject(0) do |sum, x| sum + x end) > 0)
@@ -110,6 +125,10 @@ class Report
 
     def msg(s)
         puts(s) unless (@quiet)
+    end
+
+    def info(s)
+        puts(s)
     end
 
     def warning(s)
@@ -522,16 +541,16 @@ def tape_info(db, tapes)
     tp(tapes, :label, :files, :size, :capacity, :usage, :tapeset_idx, :tapeset, :written, :verified)
 end
 
-def tape_manifest(db, tapes, mods)
+def tape_manifest(db, report, tapes, mods)
     tapes.each() do |label|
-        puts("Manifest for tape with label #{label}:")
+        report.info("Manifest for tape with label #{label}:")
         files = db.execute("SELECT path, sha1 FROM files LEFT JOIN links ON links.file_number=files.number LEFT" +
             " JOIN tapes ON tapes.number=links.tape_number WHERE tapes.label=\"#{label}\" ORDER BY files.path ASC")
         files.each() do |file|
             filename = file[0]
             filename = Pathname.new(file[0]).relative_path_from(Pathname.new(File.expand_path(
                 File.dirname(__FILE__)))).to_s() if (mods[:relative])
-            puts("#{file[1]}  #{filename}")
+            report.info("#{file[1]}  #{filename}")
         end
     end
 end
@@ -592,8 +611,7 @@ def tape_scripts(db, report, tapes, mods)
             
             FileUtils.chmod('u+x', "write_#{label}.sh")
         rescue IOError => e
-            puts('IOError:')
-            puts(e)
+            report.error('IOError:' + e.to_s())
             error = true
         ensure
             manifest_file.close() unless manifest_file.nil?
@@ -650,7 +668,13 @@ def tapeset_add(db, report, name, paths, sets)
 end
 
 def tapeset_update(db, report, old_name, new_name)
-    # TODO: Implement me.
+    in_db = db.get_first_value("SELECT COUNT (*) FROM tapesets WHERE name=\"#{new_name}\"")
+    if (in_db == 0)
+        db.execute("UPDATE tapesets SET name=\"#{new_name}\" WHERE name=\"#{old_name}\"")
+        report.tapeset_updated(old_name)
+    else
+        report.error("Tapeset with name #{new_name} already exists in the database.")
+    end
 end
 
 def tapeset_remove(db, report, names)
@@ -675,7 +699,8 @@ def tapeset_list(db, names_fuzzy)
 end
 
 def tapeset_info(db, names)
-    query = 'SELECT DISTINCT tapesets.name, tapesets.tape_count, tapes.label, tapes.tapeset_idx FROM tapesets LEFT JOIN links ON links.tapeset_number=tapesets.number LEFT JOIN tapes ON tapes.number=links.tape_number'
+    query = 'SELECT DISTINCT tapesets.name, tapesets.tape_count, tapes.label, tapes.tapeset_idx FROM tapesets LEFT' +
+        ' JOIN links ON links.tapeset_number=tapesets.number LEFT JOIN tapes ON tapes.number=links.tape_number'
     unless (names.empty?())
         query += ' WHERE'
         names.each() do |name|
@@ -976,7 +1001,7 @@ begin
             when 'info'
                 tape_info(db, exec[:items])
             when 'manifest'
-                tape_manifest(db, exec[:items], mods)
+                tape_manifest(db, report, exec[:items], mods)
             when 'scripts'
                 tape_scripts(db, report, exec[:items], mods)
             when 'written'
