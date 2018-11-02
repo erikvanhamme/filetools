@@ -816,6 +816,9 @@ def tool_parse_command_line(exec, mods)
         options.on('-t', '--tape-device device', 'Selects the tape device for tape operations.') do |device|
             mods[:device] = device
         end
+        options.on('-I', '--incremental', 'Selects incremental tapeset mode.') do ||
+            mods[:incremental] = true
+        end
 
         options.separator('')
         options.separator('Actions:')
@@ -986,12 +989,14 @@ begin
     db_version = 2
     exec = {:mode => '', :action => '', :items => []}
     mods = {:verbose => false, :quiet => false, :relative => false, :duplicates => false, :sets => 1, :ffd => true, 
-        :name => '', :async => false, :device => ''}
+        :name => '', :async => false, :device => '', :incremental => false}
     db = nil
     
     # Parse and validate command line.
     tool_parse_command_line(exec, mods)
     report = Report.new(mods)
+
+    puts mods.to_s
 
     # Run tool if no error.
     if (tool_validate_command_line(exec, mods, report))
