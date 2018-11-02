@@ -113,6 +113,16 @@ class Report
         puts("Tapeset #{name} removed.") if (@verbose)
     end
 
+    def link_added(path, label, tapeset)
+        @r[:l_add] += 1
+        puts("Link added: #{path} #{label} #{tapeset}")
+    end
+
+    def link_removed(path, label, tapeset)
+        @r[:l_rm] += 1
+        puts("Link removed: #{path} #{label} #{tapeset}")
+    end
+
     def finalize()
         if (@verbose)
             if ((@r.values.inject(0) do |sum, x| sum + x end) > 0)
@@ -678,7 +688,48 @@ def tapeset_update(db, report, old_name, new_name)
 end
 
 def tapeset_remove(db, report, names)
-    # TODO: Implement me.
+    names.each() do |tapeset|
+        # First, collect all the information.
+        tapeset_number = db.get_first_value("SELECT number FROM tapesets WHERE name=\"#{tapeset}\"")
+
+        tapes = db.execute("SELECT DISTINCT links.tape_number, tapes.label FROM links LEFT JOIN tapes ON" +
+            " tapes.number=links.tape_number WHERE tapeset_number=#{tapeset_number}")
+
+        files_check = db.execute("SELECT links.file_number, files.path FROM links LEFT JOIN files ON" +
+            " files.number=links.file_number WHERE links.tapeset_number=#{tapeset_number} AND files.on_disk=0")
+        files_remove = []
+        files_check.each() do |file|
+            tapeset_count = db.get_first_value("SELECT COUNT(DISTINCT tapeset_number) FROM links WHERE" +
+                " file_number=#{file[0]} AND NOT tapeset_number=#{tapeset_number}")
+            if (tapeset_count == 0)
+                files_remove << file
+            end
+        end
+
+        links = db.execute("SELECT files.path, tapes.label, tapesets.name FROM links LEFT JOIN files ON" +
+            " files.number=links.file_number LEFT JOIN tapes ON tapes.number=links.tape_number LEFT JOIN tapesets" +
+            " ON tapesets.number=links.tapeset_number WHERE links.tapeset_number=#{tapeset_number}")
+
+        # Now make the database updates.
+        # 1. Delete the tapeset.
+        db.execute("DELETE FROM tapesets WHERE number=#{tapeset_number}")
+        report.tapeset_removed(tapeset)
+        # 2. Update tapes.
+        tapes.each() do |tape|
+            db.execute("UPDATE tapes SET tapeset_idx=-1, written=NULL, verified=NULL WHERE number=#{tape[0]}")
+            report.tape_updated(tape[1])
+        end
+        # 3. Remove files.
+        files_remove.each() do |file|
+            db.execute("DELETE FROM files WHERE number=#{file[0]}")
+            report.file_removed(file[1])
+        end
+        # 4. Remove links.
+        db.execute("DELETE FROM links WHERE tapeset_number=#{tapeset_number}")
+        links.each() do |link|
+            report.link_removed(link[0], link[1], link[2])
+        end
+    end
 end
 
 def tapeset_list(db, names_fuzzy)
