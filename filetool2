@@ -425,11 +425,26 @@ def tape_add(db, report, tapes)
 end
 
 def tape_update(db, report, old_name, new_name)
-    # TODO: Implement me.
+    in_db = db.get_first_value("SELECT COUNT (*) FROM tapes WHERE label=\"#{new_name}\"")
+    if (in_db == 0)
+        db.execute("UPDATE tapes SET label=\"#{new_name}\", written=NULL, verified=NULL WHERE label=\"#{old_name}\"")
+        report.tape_updated(old_name)
+    else
+        report.error("Cannot rename #{old_name} to #{new_name}, #{new_name} exists in the database.")
+    end
 end
 
 def tape_remove(db, report, tapes)
-    # TODO: Implement me.
+    tapes.each() do |label|
+        count = db.get_first_value("SELECT COUNT (*) FROM links LEFT JOIN tapes ON tapes.number=links.tape_number" +
+            " WHERE tapes.label=\"#{label}\"")
+        if (count == 0)
+            db.execute("DELETE FROM tapes WHERE label=\"#{label}\"")
+            report.tape_removed(label)
+        else
+            report.error("Tape with label #{label} is part of a tapeset.") 
+        end
+    end
 end
 
 def tape_list(db, tapes_fuzzy)
