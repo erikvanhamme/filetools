@@ -503,8 +503,72 @@ def tape_manifest(db, report, tapes)
     # TODO: Implement me.
 end
 
-def tape_scripts(db, report, tapes)
-    # TODO: Implement me.
+def tape_scripts(db, report, tapes, mods)
+    tapes.each() do |label|
+        # Get the file data of the involved files.
+        all_files = db.execute("SELECT path, sha1, on_disk FROM files LEFT JOIN links ON links.file_number" +
+            "=files.number LEFT JOIN tapes ON tapes.number=links.tape_number WHERE tapes.label=\"#{label}\"" +
+            " ORDER BY files.path ASC")
+        
+        # Warn if files are no longer on disk. Could be that the tapeset was created long ago and is being re-written
+        # after some files have been removed. In this case we will exclude them from the tape. Exclude these from the
+        # write list at this point.
+        write_files = []
+        all_files.each() do |file|
+            if (file[2] == 0)
+                report.warning("File #{file[0]} is no longer on disk, writing the tape without it.")
+            else
+                write_files << file
+            end
+        end
+
+        begin
+            # Start by writing the manifest, checksums and filelist files.
+            manifest_file = File.open("manifest_#{label}.txt", 'w')
+            checksums_file = File.open("checksums_#{label}.txt", 'w')
+            filelist_file = File.open("filelist_#{label}.txt", 'w')
+
+            filelist_file.puts('manifest.txt')
+            filelist_file.puts('checksums.txt')
+
+            write_files.each() do |file|
+                relative_path = Pathname.new(file[0]).relative_path_from(Pathname.new(
+                    File.expand_path(File.dirname(__FILE__)))).to_s()
+
+                manifest_file.puts(relative_path)
+                filelist_file.puts(relative_path)
+                checksums_file.puts("#{file[1]}  #{relative_path}")
+            end
+
+            # Then produce actual write script.
+            script_file = File.open("write_#{label}.sh", 'w')
+            script_file.puts('#!/bin/bash')
+            script_file.puts("echo \"Writing tape #{label}.\"")
+            script_file.puts("cp manifest_#{label}.txt manifest.txt")
+            script_file.puts("cp checksum_#{label}.txt checksum.txt")
+            script_file.puts("mt-st -f #{mods[:device]} compression 0")
+            if (mods[:verbose])
+                script_file.puts("tar -c -v -f #{mods[:device]} -b 8192 -T filelist.txt")
+            else
+                script_file.puts("tar -c -f #{mods[:device]} -b 8192 -T filelist.txt")
+            end
+            script_file.puts("mt-st -f #{mods[:device]} rewoffl")
+            script_file.puts("./filetool2 -m tape -w #{label}")
+            script_file.puts('rm manifest.txt checksum.txt')
+            script_file.puts("echo \"Done.\"")
+            
+            FileUtils.chmod('u+x', "write_#{label}.sh")
+        rescue IOError => e
+            puts('IOError:')
+            puts(e)
+            error = true
+        ensure
+            manifest_file.close() unless manifest_file.nil?
+            checksums_file.close() unless checksums_file.nil?
+            filelist_file.close() unless filelist_file.nil?
+            script_file.close() unless script_file.nil?
+        end
+    end
 end
 
 def tape_written(db, report, tapes)
@@ -881,7 +945,7 @@ begin
             when 'manifest'
                 tape_manifest(db, report, exec[:items])
             when 'scripts'
-                tape_scripts(db, report, exec[:items])
+                tape_scripts(db, report, exec[:items], mods)
             when 'written'
                 tape_written(db, report, exec[:items])
             when 'verified'
