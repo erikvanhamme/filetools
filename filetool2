@@ -1,0 +1,902 @@
+#!/usr/bin/ruby
+
+# Copyright 2018 Erik Van Hamme
+# 
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+# 
+#     http://www.apache.org/licenses/LICENSE-2.0
+# 
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+require 'digest/sha1'
+require 'fileutils'
+require 'find'
+require 'optparse'
+require 'pathname'
+require 'sqlite3'
+require 'table_print'
+
+#-----------------------------------------------------------------------------------------------------------------------
+# Class definitions
+
+class Report
+    def initialize(mods)
+        @verbose = mods[:verbose]
+        @quiet = mods[:quiet]
+        @r = { :f_add => 0, :f_up => 0, :f_rm => 0, :t_add => 0, :t_up => 0, :t_rm => 0, :s_add => 0, :s_up => 0, 
+            :s_rm => 0, :l_add => 0, :l_rm => 0 }
+    end
+
+    def tool_init(version, db_version)
+        puts("Filetool (version: #{version}, db_version: #{db_version})") unless (@quiet)
+    end
+
+    def db_create()
+        puts('New database created.') unless (@quiet)
+    end
+
+    def db_increment(from)
+        puts("Database schema update from #{from} to #{from + 1}.") unless (@quiet)
+    end
+
+    def db_incompatible(version_expected, version, db_version_expected, db_version)
+        error("Incompatible versions. (db_v: #{version} > exp_db_v: #{version_expected}) || " +
+                "(schema_db_v: #{db_version} > exp_schema_db_v: #{db_version_expected})")
+    end
+
+    def db_async()
+        puts('Database in asynchronous mode.') unless (@quiet)
+    end
+
+    def db_init(files, tapes, tapesets, links)
+        data = [{files: files, tapes: tapes, tapesets: tapesets, links: links}]
+        puts('Database initialized. Contents:') if (@verbose)
+        tp(data, data[0].keys) if (@verbose)
+    end
+
+    def db_exception(exception)
+        puts(exception.to_s())
+    end
+
+    def file_added(absolute_path)
+        @r[:f_add] += 1
+        puts("File #{absolute_path} was added.") if (@verbose)
+    end
+
+    def file_updated(absolute_path)
+        @r[:f_up] += 1
+        puts("File #{absolute_path} was updated.") if (@verbose)
+    end
+
+    def file_removed(absolute_path)
+        @r[:f_rm] += 1
+        puts("File #{absolute_path} was removed.") if (@verbose)
+    end
+
+    def file_duplicate(db_absolute_path, match_absolute_path)
+        puts("Duplicate file: master=#{db_absolute_path} duplicate=#{match_absolute_path}")
+    end
+
+    def tape_added(label)
+        @r[:t_add] += 1
+        puts("Tape #{label} added.") if (@verbose)
+    end
+
+    def tape_updated(label)
+        @r[:t_up] += 1
+        puts("Tape #{label} updated.") if (@verbose)
+    end
+    
+    def tape_removed(label)
+        @r[:t_rm] += 1
+        puts("Tape #{label} removed.") if (@verbose)
+    end
+
+    def finalize()
+        if (@verbose)
+            if ((@r.values.inject(0) do |sum, x| sum + x end) > 0)
+                tp([@r], @r.keys)
+            else
+                puts('No Database modifications.')
+            end
+        end
+    end
+
+    def error(s)
+        puts('Error: ' + s)
+    end
+
+    def msg(s)
+        puts(s) unless (@quiet)
+    end
+end
+
+class DbWrapper
+    def initialize()
+        @db = nil
+    end
+
+    def wrap(db)
+        @db = db
+    end
+
+    def execute(sql)
+        puts('-> ' + sql)
+        return @db.execute(sql)
+    end
+
+    def get_first_value(sql)
+        puts('-> ' + sql)
+        return @db.get_first_value(sql)
+    end
+
+    def get_first_row(sql)
+        puts('-> ' + sql)
+        return @db.get_first_row(sql)
+    end
+
+    def changes()
+        return @db.changes()
+    end
+
+    def close()
+        @db.close()
+    end
+end
+
+#-----------------------------------------------------------------------------------------------------------------------
+# DB method section
+
+def db_empty?(db)
+    version_table = db.execute('SELECT name FROM sqlite_master WHERE type="table" AND name="version"')
+    version_table.empty?()
+end
+
+def db_create_version_table(db, version, db_version)
+    db.execute('CREATE TABLE version(version INTEGER NOT NULL, db_version INTEGER NOT NULL)')
+    db.execute("INSERT INTO version(version, db_version) VALUES(#{version}, #{db_version})")
+end
+
+def db_create_files_table(db)
+	db.execute('CREATE TABLE IF NOT EXISTS files(number INTEGER PRIMARY KEY, sha1 TEXT, size INTEGER, mtime INTEGER,' +
+        ' path TEXT, on_disk INTEGER)')
+	db.execute('CREATE INDEX IF NOT EXISTS files_sha1 ON files(sha1)')
+	db.execute('CREATE INDEX IF NOT EXISTS files_path ON files(path)')
+end
+
+def db_create_tapes_table(db)
+    db.execute('CREATE TABLE IF NOT EXISTS tapes(number INTEGER PRIMARY KEY, label TEXT, size INTEGER, tapeset_idx' +
+        ' INTEGER, written INTEGER, verified INTEGER)')
+end
+
+def db_create_tapesets_table(db)
+    db.execute('CREATE TABLE IF NOT EXISTS tapesets(number INTEGER PRIMARY KEY, name TEXT UNIQUE, tape_count INTEGER)')
+end
+
+def db_create_links_table(db)
+    db.execute('CREATE TABLE IF NOT EXISTS links(file_number INTEGER, tape_number INTEGER, tapeset_number INTEGER)')
+end
+
+def db_create_schema(db, report, version, db_version)
+    db_create_version_table(db, version, db_version)
+    db_create_files_table(db)
+    db_create_tapes_table(db)
+    db_create_tapesets_table(db)
+    db_create_links_table(db)
+    report.db_create()
+end
+
+def db_increment_schema(db, current, report)
+    report.db_increment(current)
+    if (current == 1)
+        # Create the new links table and fill it with the information from the other tables.
+        db_create_links_table(db)
+        db.execute('INSERT INTO links (file_number, tape_number, tapeset_number) SELECT file_number, tape_number,' +
+            ' tapeset FROM file_tape_links LEFT JOIN tapes ON tapes.number=file_tape_links.tape_number')
+
+        # Drop the column tapeset from tapes table through copying to new table after rename. (Sqlite3 does not support
+        # drop column.)
+        db.execute('ALTER TABLE tapes RENAME TO tapes_v1')
+        db_create_tapes_table(db)
+        db.execute('INSERT INTO tapes (number, label, size, tapeset_idx) SELECT number, label, size, tapeset_idx FROM' +
+            ' tapes_v1')
+
+        # Drop the unused tables.
+        db.execute('DROP TABLE file_tape_links')
+        db.execute('DROP TABLE tapes_v1')        
+    end
+    if (current == 2)
+        # TODO: Handle schema update from V2 to V3 here.
+    end
+    current += 1
+    db.execute("UPDATE version SET db_version=#{current}")
+    return current
+end
+
+def db_update_schema(db, report, version, db_version)
+    versions = db.execute('SELECT * FROM version')
+    version_in_db = versions[0][0]
+    db_version_in_db = versions[0][1]
+
+    if (version_in_db != version)
+        db.execute("UPDATE version SET version=#{version}")
+    end
+
+    while (db_version_in_db < db_version)
+        db_version_in_db = db_increment_schema(db, db_version_in_db, report)
+    end
+end
+
+def db_check_schema(db, report, version, db_version)
+    versions = db.execute('SELECT * FROM version')
+    version_in_db = versions[0][0]
+    db_version_in_db = versions[0][1]
+
+    if ((version_in_db > version) || (db_version_in_db > db_version))
+        report.db_incompatible(version, version_in_db, db_version, db_version_in_db)
+        exit(-1) # Impossible to continue.
+    end
+    
+    db_update_schema(db, report, version, db_version)
+end
+
+def db_init(report, version, db_version, async, wrapper = nil)
+    if (wrapper.nil?)
+        db = SQLite3::Database.new("filetool2.db")
+    else
+        wrapper.wrap(SQLite3::Database.new("filetool2.db"))
+        db = wrapper
+    end
+
+    if (async)
+        db.execute('PRAGMA synchronous = OFF')
+        report.db_async()
+    end
+
+    if (db_empty?(db))
+        db_create_schema(db, report, version, db_version)
+    else
+        db_check_schema(db, report, version, db_version)
+    end
+
+    files = db.get_first_value('SELECT COUNT(*) FROM files')
+    tapes = db.get_first_value('SELECT COUNT(*) FROM tapes')
+    tapesets = db.get_first_value('SELECT COUNT(*) FROM tapesets')
+    links = db.get_first_value('SELECT COUNT(*) FROM links')
+    report.db_init(files, tapes, tapesets, links)
+
+    return db
+end
+
+#-----------------------------------------------------------------------------------------------------------------------
+# File method section
+
+def file_sha1(absolute_path)
+    sha1 = Digest::SHA1.new()
+    File.open(absolute_path, 'rb') do |iostream|
+        while (block = iostream.read(4096)) && (block.length() > 0)
+            sha1.update(block)
+        end
+    end
+    return sha1.hexdigest()
+end
+
+def file_add(db, report, files)
+    files.each() do |file|
+        if (File.file?(file))
+            absolute_path = File.expand_path(file)
+            in_db = db.get_first_value("SELECT COUNT(*) FROM files WHERE path=\"#{absolute_path}\" AND on_disk=1")
+            if (in_db == 0)
+                filesize = File.size(absolute_path)
+                mtime = File.mtime(absolute_path)
+                sha1 = file_sha1(absolute_path)
+                db.execute("INSERT INTO files (sha1, size, mtime, path, on_disk) VALUES (\"#{sha1}\", #{filesize}," +
+                    "#{mtime.to_i}, \"#{absolute_path}\", 1)")
+                report.file_added(absolute_path)
+            end
+        end
+    end
+end
+
+def file_update(db, report, files)
+    files.each() do |file|
+        if (File.file?(file))
+            absolute_path = File.expand_path(file)
+            filesize = File.size(absolute_path)
+            mtime = File.mtime(absolute_path)
+            file_in_db = db.get_first_row("SELECT * FROM files WHERE path=\"#{absolute_path}\" AND on_disk=1")
+            if ((file_in_db.empty?() == false) && ((file_in_db[2] != filesize) || (file_in_db[3] != mtime.to_i())))
+                sha1 = file_sha1(absolute_path)
+                file_on_tapes = db.get_first_value("SELECT COUNT(*) FROM links WHERE file_number=#{file_in_db[0]}")
+                if (file_on_tapes > 0)
+                    # Older version on tape, cannot update existing record.
+                    db.execute("UPDATE files SET on_disk=0 WHERE number=#{file_in_db[0]}")
+                    report.file_updated(absolute_path)
+                    db.execute("INSERT INTO files (sha1, size, mtime, path, on_disk) VALUES (\"#{sha1}\"," +
+                        " #{filesize}, #{mtime.to_i}, \"#{absolute_path}\", 1)")
+                    report.file_added(absolute_path)
+                else
+                    # No versions on tape, can update existing record.
+                    db.execute("UPDATE files SET sha1=\"#{sha1}\", size=#{filesize}, mtime=#{mtime.to_i()} WHERE" +
+                        " number=#{file_in_db[0]}")
+                    report.file_updated(absolute_path)
+                end
+            end
+        end
+    end
+end
+
+def file_remove(db, report, files)
+    files.each() do |file|
+        if (File.file?(file))
+            absolute_path = File.expand_path(file)
+            file_in_db = db.get_first_row("SELECT number FROM files WHERE path=\"#{absolute_path}\" AND on_disk=1")
+            unless (file_in_db.nil?)
+                file_on_tapes = db.get_first_value("SELECT COUNT(*) FROM links WHERE file_number=#{file_in_db[0]}")
+                if (file_on_tapes > 0)
+                    # File is on tape, cannot remove record, update it as no longer on disk.
+                    db.execute("UPDATE files SET on_disk=0 WHERE number=#{file_in_db[0]}")
+                    report.file_updated(absolute_path)
+                else
+                    # File is not on tape, can be removed.
+                    db.execute("DELETE FROM files WHERE number=#{file_in_db[0]}")
+                    report.file_removed(absolute_path)
+                end
+            end
+        end
+    end
+end
+
+def file_list(db, files_fuzzy)
+    # TODO: Implement me.
+end
+
+def file_info(db, files)
+    # TODO: Implement me.
+end
+
+def file_check(db, report, files)
+    files.each() do |file|
+        if (File.file?(file))
+            absolute_path = File.expand_path(file)
+            sha1 = file_sha1(absolute_path)
+            matching_sha1 = db.execute("SELECT path FROM files WHERE sha1=\"#{sha1}\" AND on_disk=1 AND NOT" +
+                " path=\"#{absolute_path}\"")
+            matching_sha1.each() do |match|
+                report.file_duplicate(absolute_path, match[0])
+            end
+        end
+    end
+end
+
+#-----------------------------------------------------------------------------------------------------------------------
+# Path method section
+
+def path_add(db, report, paths)
+    # TODO: Implement me.
+end
+
+def path_update(db, report, paths)
+    # TODO: Implement me.
+end
+
+def path_remove(db, report, paths)
+    # TODO: Implement me.
+end
+
+def path_list(db, paths_fuzzy)
+    # TODO: Implement me.
+end
+
+def path_info(db, paths)
+    # TODO: Implement me.
+end
+
+def path_prune(db, report, paths)
+    # TODO: Implement me.
+end
+
+def path_check(db, report, paths)
+    # TODO: Implement me.
+end
+
+#-----------------------------------------------------------------------------------------------------------------------
+# Tape method section
+
+def tape_valid_label?(label)
+    if (label.length() != 8)
+        return false
+    end
+
+    # Taken LTO tape label spec from:
+    # https://www.ibm.com/support/knowledgecenter/en/STCMML8/com.ibm.storage.ts3500.doc/ipg_3584_mehlab.html
+    # Only supporting LTO1-LTO8 for now.
+    return label =~ /[A-Z0-9]{6}[L]{1}[1-8]{1}/
+end
+
+def tape_add(db, report, tapes)
+    # TODO: Implement me.
+end
+
+def tape_update(db, report, old_name, new_name)
+    # TODO: Implement me.
+end
+
+def tape_remove(db, report, tapes)
+    # TODO: Implement me.
+end
+
+def tape_list(db, tapes_fuzzy)
+    query = 'SELECT label FROM tapes'
+    unless (tapes_fuzzy.empty?())
+        query += ' WHERE'
+        tapes_fuzzy.each() do |label|
+            query += " label LIKE \"#{label}%\" OR"
+        end
+        query.chomp!(' OR')
+    end
+    query += ' ORDER BY label ASC'
+    tapes = db.execute(query)
+    tapes.collect!() do |tape|
+        {:label => tape[0]}
+    end
+    tp(tapes, :label)
+end
+
+def tape_info(db, tapes)
+    query = 'SELECT DISTINCT tapes.number, tapes.label, tapes.size, tapes.tapeset_idx, tapesets.name, tapes.written,' +
+        ' tapes.verified FROM tapes LEFT JOIN links ON links.tape_number=tapes.number LEFT JOIN tapesets ON' +
+        ' tapesets.number=links.tapeset_number'
+    unless (tapes.empty?())
+        query += ' WHERE'
+        tapes.each() do |label|
+            query += " label=\"#{label}\" OR"
+        end
+        query.chomp!(' OR')
+    end
+    query += ' ORDER BY tapes.label ASC'
+
+    tapes = db.execute(query)
+    tapes.collect!() do |tape|
+        query = "SELECT files.size FROM links LEFT JOIN files ON links.file_number = files.number WHERE " +
+            " links.tape_number=#{tape[0]}"
+        files = db.execute(query)
+
+        size = 0
+        files.each() do |file|
+            size += file[0]
+        end
+        used = (size.to_f() / (tape[2].to_f() * 0.95)) * 100
+
+        w = tape[5].nil? ? nil : Time.at(tape[5])
+        v = tape[6].nil? ? nil : Time.at(tape[6])
+
+        {:label => tape[1], :files => files.length(), :size => size, :capacity => tape[2], 
+            :usage => "#{used.round(1)} %", :tapeset_idx => tape[3], :tapeset => tape[4], :written => w, 
+            :verified => v}
+    end
+    tp(tapes, :label, :files, :size, :capacity, :usage, :tapeset_idx, :tapeset, :written, :verified)
+end
+
+def tape_manifest(db, report, tapes)
+    # TODO: Implement me.
+end
+
+def tape_scripts(db, report, tapes)
+    # TODO: Implement me.
+end
+
+def tape_written(db, report, tapes)
+    now = Time.new().to_i()
+    query = "UPDATE tapes SET written=#{now} WHERE"
+    tapes.each() do |label|
+        query += " label=\"#{label}\" OR"
+    end
+    query.chomp!(' OR')
+    db.execute(query)
+    tapes.each() do |label|
+        report.tape_updated(label)
+    end
+end
+
+def tape_verified(db, report, tapes)
+    now = Time.new().to_i()
+    query = "UPDATE tapes SET verified=#{now} WHERE"
+    tapes.each() do |label|
+        query += " label=\"#{label}\" OR"
+    end
+    query.chomp!(' OR')
+    db.execute(query)
+    tapes.each() do |label|
+        report.tape_updated(label)
+    end
+end
+
+def tape_erased(db, report, tapes)
+    query = "UPDATE tapes SET written=NULL, verified=NULL WHERE"
+    tapes.each() do |label|
+        query += " label=\"#{label}\" OR"
+    end
+    query.chomp!(' OR')
+    db.execute(query)
+    tapes.each() do |label|
+        report.tape_updated(label)
+    end
+end
+
+#-----------------------------------------------------------------------------------------------------------------------
+# Tapeset method section
+
+def tapeset_add(db, report, name, paths, sets)
+    # TODO: Implement me.
+end
+
+def tapeset_update(db, report, old_name, new_name)
+    # TODO: Implement me.
+end
+
+def tapeset_remove(db, report, names)
+    # TODO: Implement me.
+end
+
+def tapeset_list(db, names_fuzzy)
+    query = 'SELECT name FROM tapesets'
+    unless (names_fuzzy.empty?())
+        query += ' WHERE'
+        names_fuzzy.each() do |name|
+            query += " name LIKE \"#{name}%\" OR"
+        end
+        query.chomp!(' OR')
+    end
+    query += ' ORDER BY name ASC'
+    tapesets = db.execute(query)
+    tapesets.collect!() do |tapeset|
+        {:name => tapeset[0]}
+    end
+    tp(tapesets, :name)
+end
+
+def tapeset_info(db, names)
+    query = 'SELECT DISTINCT tapesets.name, tapesets.tape_count, tapes.label, tapes.tapeset_idx FROM tapesets LEFT JOIN links ON links.tapeset_number=tapesets.number LEFT JOIN tapes ON tapes.number=links.tape_number'
+    unless (names.empty?())
+        query += ' WHERE'
+        names.each() do |name|
+            query += " name=\"#{name}\" OR"
+        end
+        query.chomp!(' OR')
+    end
+    query += ' ORDER BY tapes.label ASC'
+
+    data = db.execute(query)
+    data.collect!() do |row|
+        {:name => row[0], :tape => row[2], :volume => "#{(row[3] + 1)} / #{row[1]}"}
+    end
+    tp(data, :name, :tape, :volume)
+end
+
+#-----------------------------------------------------------------------------------------------------------------------
+# Tool method section
+
+def tool_parse_command_line(exec, mods)
+    parser = OptionParser.new() do |options|
+        options.separator('')
+        options.separator('Mode:')
+
+        # Mode handling.
+        options.on('-m mode', '--mode mode', 'Specifies the operational mode. [file, path, tape, tapeset]') do |mode|
+            exec[:mode] = mode
+        end
+
+        options.separator('')
+        options.separator('Modifiers:')
+
+        # Modifiers handling.
+        options.on('-v', '--verbose', 'Enables verbose mode.') do ||
+            mods[:verbose] = true
+        end
+        options.on('-q', '--quiet', 'Enables quiet mode. Overrides verbose mode.') do ||
+            mods[:quiet] = true
+            mods[:verbose] = false
+        end
+        options.on('-R', '--relative', 'Use relative paths in manifest.') do ||
+            mods[:relative] = true
+        end
+        options.on('-d', '--duplicates', 'Enables duplicates mode.') do ||
+            mods[:duplicates] = true
+        end
+        options.on('-2', '--double', 'Enables double mode. Generates 2 tapesets.') do ||
+            mods[:sets] = 2 if (mods[:sets] < 2)
+        end
+        options.on('-3', '--triple', 'Enables triple mode. Generates 3 tapesets.') do ||
+            mods[:sets] = 3 if (mods[:sets] < 3)
+        end
+        options.on('-D', '--first-fit-decreasing', 'First Fit Decreasing algorithm for packing files on tapes.') do ||
+            mods[:ffd] = true
+        end
+        options.on('-n', '--name name', 'Supplies the name of the tapeset.') do |name|
+            mods[:name] = name
+        end
+        options.on('-A', '--async', 'Database in asynchronous mode. WARNING unsafe if PC crashes or loses power!') do ||
+            mods[:async] = true
+        end
+        options.on('-t', '--tape-device device', 'Selects the tape device for tape operations.') do |device|
+            mods[:device] = device
+        end
+
+        options.separator('')
+        options.separator('Actions:')
+
+        # Actions handling.
+        options.on('-a', '--add', 'Adds the specified item.') do ||
+            exec[:action] = 'add'
+        end
+        options.on('-u', '--update', 'Updates the specified item.') do ||
+            exec[:action] = 'update'
+        end
+        options.on('-r', '--remove', 'Removes the specified item.') do ||
+            exec[:action] = 'remove'
+        end
+        options.on('-l', '--list', 'Lists the specified item.') do ||
+            exec[:action] = 'list'
+        end
+        options.on('-i', '--info', 'Displays info about the specified item.') do ||
+            exec[:action] = 'info'
+        end
+        options.on('-M', '--manifest', 'Displays the manifest of the specified tape.') do ||
+            exec[:action] = 'manifest'
+        end
+        options.on('-p', '--prune', 'Prunes the specified item.') do ||
+            exec[:action] = 'prune'
+        end
+        options.on('-c', '--check', 'Checks the specified item.') do ||
+            exec[:action] = 'check'
+        end
+        options.on('-s', '--scripts', 'Creates the write, erase and verify scripts for the tape.') do ||
+            exec[:action] = 'scripts'
+        end
+        options.on('-w', '--mark-written', 'Marks the tapes as written.') do ||
+            exec[:action] = 'written'
+        end
+        options.on('-V', '--mark-verified', 'Marks the tapes as verified.') do ||
+            exec[:action] = 'verified'
+        end
+        options.on('-e', '--mark-erased', 'Marks the tapes as erased.') do ||
+            exec[:action] = 'erased'
+        end
+
+        options.separator('')
+        options.separator('Usage:')
+
+        # Show usage if no options specified.
+        options.on_tail('-h', '--help', 'Displays this help message.') do || 
+            puts(options) 
+        end
+    end
+    parser.parse!
+
+    # What is left over at this point are the items (if any).
+    exec[:items] = ARGV
+end
+
+def tool_validate_command_line(exec, mods, report)
+    # If in tape mode, parse items array for possible input from barcode reader.
+    if (exec[:mode] == 'tape')
+        new_items = []
+        exec[:items].each() do |str|
+            new_items << str.split('*').reject() do |c| c.empty?() end
+        end
+        new_items.flatten!()
+        unless (new_items == nil)
+            new_items.uniq!()
+        end
+        exec[:items] = new_items
+    end
+
+    # Check mode, and if actions are allowed in the mode.
+    illegal = { \
+        'file' => %w[manifest prune scripts written verified erased], \
+        'path' => %w[manifest scripts written verified erased], \
+        'tape' => %w[prune check], \
+        'tapeset' => %w[manifest prune check scripts written verified erased] \
+    }
+    if (illegal[exec[:mode]] == nil)
+        report.error("Unsupported mode #{exec[:mode]} specified.")
+        return false
+    elsif (illegal[exec[:mode]].include?(exec[:action]))
+        report.error("Mode #{exec[:mode]} cannot be combined with action #{exec[:action]}.")
+        return false
+    end
+
+    # Check action.
+    legal = %w[add update remove list info manifest prune check scripts written verified erased]
+    unless (legal.include?(exec[:action]))
+        report.error("Unsupported action #{exec[:action]} specified.")
+        return false
+    end
+
+    # Check if correct number of items is specified.
+    min = ((exec[:action] == 'list') || (exec[:action] == 'info')) ? 0 : 1
+    max = ((exec[:action] == 'update') && ((exec[:mode] == 'tape') || (exec[:mode] == 'tapeset'))) ? 1 : -1
+    if (exec[:items].length() < min)
+        report.error("EAt least #{min} items must be specified.")
+        return false
+    end
+    if (max > -1) && (exec[:items].length() > max)
+        report.error("Maximum #{max} items may be specified.")
+        return false
+    end
+
+    # Items do not need to be checked when running list action (fuzzy input allowed.)
+    unless(exec[:action] == 'list')
+        # Check if all items are valid files if in file mode.
+        if (exec[:mode] == 'file')
+            exec[:items].each() do |file|
+                unless (File.file?(file))
+                    report.error("Incorrect file name: #{file}")
+                    return false
+                end
+            end
+        end
+
+        # Check if all items are valid paths if in path mode. (or when adding in tapeset mode.)
+        if ((exec[:mode] == 'path') || ((exec[:mode] == 'tapeset') && (exec[:action] == 'add')))
+            exec[:items].each() do |path|
+                unless (File.directory?(path))
+                    report.error("Incorrect path name: #{path}")
+                    return false
+                end
+            end
+        end
+
+        # Check if all items are valid tapes if in tape mode.
+        if (exec[:mode] == 'tape')
+            exec[:items].each() do |label|
+                unless (tape_valid_label?(label))
+                    report.error("Incorrect tape label: #{label}")
+                    return false
+                end
+            end
+        end
+    end
+
+    # Check if device is set properly when in tape mode and scripts is selected.
+    actions = %w[scripts]
+    if ((exec[:mode] == 'tape') && (actions.include?(exec[:action])))
+        if (mods[:device].empty?())
+            report.error('No tape streamer device specified.')
+            return false
+        end
+        unless (File.writable?(mods[:device]))
+            report.error("Invalid tape streamer device specified : #{mods[:device]}.")
+            return false
+        end
+    end
+
+    # Check target name if renaming a tape.
+    if ((exec[:mode] == 'tape') && (exec[:action] == 'update'))
+        unless (tape_valid_label?(mods[:name]))
+            report.error("Invalid tape name specified: #{mods[:name]}.")
+        end
+    end
+
+    # All is OK!
+    return true
+end
+
+#-----------------------------------------------------------------------------------------------------------------------
+# Main section
+
+begin
+    # Initialize variables
+    version = 2
+    db_version = 2
+    exec = {:mode => '', :action => '', :items => []}
+    mods = {:verbose => false, :quiet => false, :relative => false, :duplicates => false, :sets => 1, :ffd => true, 
+        :name => '', :async => false, :device => ''}
+    db = nil
+    
+    # Parse and validate command line.
+    tool_parse_command_line(exec, mods)
+    report = Report.new(mods)
+
+    # Run tool if no error.
+    if (tool_validate_command_line(exec, mods, report))
+        # Startup banner.
+        report.tool_init(version, db_version)
+
+        # Initialize the database.
+        db = db_init(report, version, db_version, mods[:async], DbWrapper.new())
+        #db = db_init(report, version, db_version, mods[:async])
+
+        # Handle file mode.
+        if (exec[:mode] == 'file')
+            case exec[:action]
+            when 'add'
+                file_add(db, report, exec[:items])
+            when 'update'
+                file_update(db, report, exec[:items])
+            when 'remove'
+                file_remove(db, report, exec[:items])
+            when 'list'
+                file_list(db, exec[:items])
+            when 'info'
+                file_info(db, exec[:items])
+            when 'check'
+                file_check(db, report, exec[:items])
+            end
+        end
+
+        if (exec[:mode] == 'path')
+            case exec[:action]
+            when 'add'
+                path_add(db, report, exec[:items])
+            when 'update'
+                path_update(db, report, exec[:items])
+            when 'remove'
+                path_remove(db, report, exec[:items])
+            when 'list'
+                path_list(db, exec[:items])
+            when 'info'
+                path_info(db, exec[:items])
+            when 'prune'
+                path_prune(db, report, exec[:items])
+            when 'check'
+                path_check(db, report, exec[:items])
+            end
+        end
+
+        if (exec[:mode] == 'tape')
+            case exec[:action]
+            when 'add'
+                tape_add(db, report, exec[:items])
+            when 'update'
+                tape_update(db, report, exec[:items][0], mods[:name])
+            when 'remove'
+                tape_remove(db, report, exec[:items])
+            when 'list'
+                tape_list(db, exec[:items])
+            when 'info'
+                tape_info(db, exec[:items])
+            when 'manifest'
+                tape_manifest(db, report, exec[:items])
+            when 'scripts'
+                tape_scripts(db, report, exec[:items])
+            when 'written'
+                tape_written(db, report, exec[:items])
+            when 'verified'
+                tape_verified(db, report, exec[:items])
+            when 'erased'
+                tape_erased(db, report, exec[:items])
+            end
+        end
+
+        if (exec[:mode] == 'tapeset')
+            case exec[:action]
+            when 'add'
+                tapeset_add(db, report, mods[:name], exec[:items], mods[:sets])
+            when 'update'
+                tapeset_update(db, report, exec[:items][0], mods[:name])
+            when 'remove'
+                tapeset_remove(db, report, exec[:items])
+            when 'list'
+                tapeset_list(db, exec[:items])
+            when 'info'
+                tapeset_info(db, exec[:items])
+            end
+        end
+
+        # Final report.
+        report.finalize()
+    end
+rescue SQLite3::Exception => exception
+    report.db_exception(exception)
+ensure
+    db.close() if (db)
+end
+
