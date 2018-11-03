@@ -456,7 +456,22 @@ def path_info(db, paths)
 end
 
 def path_prune(db, report, paths)
-    # TODO: Implement me.
+    paths.each() do |path|
+        absolute_path = File.expand_path(path)
+        files = db.execute("SELECT number, path FROM files WHERE path LIKE \"#{absolute_path}%\" AND on_disk=1")
+        files.each() do |file|
+            unless (File.file?(file[1]))
+                on_tape = db.get_first_value("SELECT COUNT (*) FROM links WHERE file_number=#{file[0]}")
+                if (on_tape > 0)
+                    db.execute("UPDATE files SET on_disk=0 WHERE number=#{file[0]}")
+                    report.file_updated(file[1])
+                else
+                    db.execute("DELETE FROM files WHERE number=#{file[0]}")
+                    report.file_removed(file[1])
+                end
+            end
+        end
+    end
 end
 
 def path_check(db, report, paths)
@@ -1163,16 +1178,14 @@ begin
     tool_parse_command_line(exec, mods)
     report = Report.new(mods)
 
-    puts mods.to_s
-
     # Run tool if no error.
     if (tool_validate_command_line(exec, mods, report))
         # Startup banner.
         report.tool_init(version, db_version)
 
         # Initialize the database.
-        db = db_init(report, version, db_version, mods[:async], DbWrapper.new())
-        #db = db_init(report, version, db_version, mods[:async])
+        #db = db_init(report, version, db_version, mods[:async], DbWrapper.new())
+        db = db_init(report, version, db_version, mods[:async])
 
         # Handle file mode.
         if (exec[:mode] == 'file')
