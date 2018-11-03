@@ -344,7 +344,7 @@ def file_update(db, report, files)
             filesize = File.size(absolute_path)
             mtime = File.mtime(absolute_path)
             file_in_db = db.get_first_row("SELECT * FROM files WHERE path=\"#{absolute_path}\" AND on_disk=1")
-            if ((file_in_db.empty?() == false) && ((file_in_db[2] != filesize) || (file_in_db[3] != mtime.to_i())))
+            if ((file_in_db.nil?() == false) && ((file_in_db[2] != filesize) || (file_in_db[3] != mtime.to_i())))
                 sha1 = file_sha1(absolute_path)
                 file_on_tapes = db.get_first_value("SELECT COUNT(*) FROM links WHERE file_number=#{file_in_db[0]}")
                 if (file_on_tapes > 0)
@@ -412,15 +412,39 @@ end
 # Path method section
 
 def path_add(db, report, paths)
-    # TODO: Implement me.
+    files = []
+    paths.each() do |dir|
+	    Find.find(dir) do |path|
+		    if (File.file?(path))
+                files << path
+            end
+        end
+    end
+    file_add(db, report, files)
 end
 
 def path_update(db, report, paths)
-    # TODO: Implement me.
+    files = []
+    paths.each() do |dir|
+	    Find.find(dir) do |path|
+		    if (File.file?(path))
+                files << path
+            end
+        end
+    end
+    file_update(db, report, files)
 end
 
 def path_remove(db, report, paths)
-    # TODO: Implement me.
+    files = []
+    paths.each() do |dir|
+	    Find.find(dir) do |path|
+		    if (File.file?(path))
+                files << path
+            end
+        end
+    end
+    file_remove(db, report, files)
 end
 
 def path_list(db, paths_fuzzy)
@@ -436,7 +460,15 @@ def path_prune(db, report, paths)
 end
 
 def path_check(db, report, paths)
-    # TODO: Implement me.
+    files = []
+    paths.each() do |dir|
+	    Find.find(dir) do |path|
+		    if (File.file?(path))
+                files << path
+            end
+        end
+    end
+    file_check(db, report, files)
 end
 
 #-----------------------------------------------------------------------------------------------------------------------
