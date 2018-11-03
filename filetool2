@@ -281,9 +281,9 @@ end
 
 def db_init(report, version, db_version, async, wrapper = nil)
     if (wrapper.nil?)
-        db = SQLite3::Database.new("filetool2.db")
+        db = SQLite3::Database.new("filetool.db")
     else
-        wrapper.wrap(SQLite3::Database.new("filetool2.db"))
+        wrapper.wrap(SQLite3::Database.new("filetool.db"))
         db = wrapper
     end
 
@@ -653,6 +653,7 @@ def tape_scripts(db, report, tapes, mods)
             script_file = File.open("write_#{label}.sh", 'w')
             script_file.puts('#!/bin/bash')
             script_file.puts("echo \"Writing tape #{label}.\"")
+            script_file.puts("date")
             script_file.puts("cp manifest_#{label}.txt manifest.txt")
             script_file.puts("cp checksum_#{label}.txt checksum.txt")
             script_file.puts("mt-st -f #{mods[:device]} compression 0")
@@ -662,7 +663,7 @@ def tape_scripts(db, report, tapes, mods)
                 script_file.puts("tar -c -f #{mods[:device]} -b 8192 -T filelist.txt")
             end
             script_file.puts("mt-st -f #{mods[:device]} rewoffl")
-            script_file.puts("./filetool2 -m tape -w #{label}")
+            script_file.puts("./filetool -m tape -w #{label}")
             script_file.puts('rm manifest.txt checksum.txt')
             script_file.puts("echo \"Done.\"")
             
