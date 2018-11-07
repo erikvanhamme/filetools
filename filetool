@@ -115,12 +115,12 @@ class Report
 
     def link_added(path, label, tapeset)
         @r[:l_add] += 1
-        puts("Link added: #{path} #{label} #{tapeset}")
+        puts("Link added: #{path} #{label} #{tapeset}") if (@verbose)
     end
 
     def link_removed(path, label, tapeset)
         @r[:l_rm] += 1
-        puts("Link removed: #{path} #{label} #{tapeset}")
+        puts("Link removed: #{path} #{label} #{tapeset}") if (@verbose)
     end
 
     def finalize()
@@ -802,10 +802,10 @@ def tapeset_add(db, report, paths, mods)
     # Actual bin packing of files.
     file_count = files.length()
     for i in 0..(file_count - 1)
-        file_size = files[i][2]
+        file_size = (files[i][2]) + 512 # 512 bytes of overhead for each file in the tarball.
         stored = false
         for j in 0..(tapes_needed - 1)
-            if (tape_bytes_left[j] > file_size)
+            if (tape_bytes_left[j] > (file_size + 1024)) # Add 1024 bytes here to allow the tarball footer to fit.
                 tape_contents[j] << files[i]
                 tape_bytes_left[j] -= file_size
                 stored = true
@@ -818,13 +818,22 @@ def tapeset_add(db, report, paths, mods)
         end
     end
 
-    # 4. Report if verbose.
-    if (mods[:verbose])
+    # 4. Report tape info, unless in quiet mode.
+    unless (mods[:quiet])
         for i in 0..(tapes_needed - 1)
-            bytes_on_tape = bytes_per_tape - tape_bytes_left[i]
+            tar_headers = tape_contents[i].length() * 512
+            tar_size_no_footer = bytes_per_tape - tape_bytes_left[i]
+            modulo = tar_size_no_footer % (8192 * 512)
+            bytes_on_tape = 0
+            if (modulo < 1024)
+                bytes_on_tape = tar_size_no_footer + modulo + (8192 * 512)
+            else
+                bytes_on_tape = tar_size_no_footer - modulo + (8192 * 512)
+            end
             tape_use_percentage =  (bytes_on_tape.to_f / first_tape_size) * 100
+            tar_overhead = bytes_on_tape - tar_size_no_footer + tar_headers
             report.msg("Tape #{i} holds #{bytes_on_tape} bytes in #{tape_contents[i].length()} files and is used" +
-                " [#{tape_use_percentage.round(2)}]%.")
+                " [#{tape_use_percentage.round(2)}]%. Tarball overhead is #{tar_overhead} bytes.")
         end
     end
 
