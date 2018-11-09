@@ -15,6 +15,7 @@
 # limitations under the License.
 
 require 'digest/sha1'
+require 'ffi-xattr'
 require 'fileutils'
 require 'find'
 require 'optparse'
@@ -138,7 +139,7 @@ class Report
     end
 
     def info(s)
-        puts(s)
+        puts(s) unless (@quiet)
     end
 
     def warning(s)
@@ -147,6 +148,26 @@ class Report
 
     def error(s)
         puts('Error: ' + s)
+    end
+
+    def time(s, t_time)
+        puts("#{s} at #{t_time}.") unless (@quiet)
+    end
+    
+    def duration(s, t_start, t_end)
+        d = t_end - t_start
+        fraction = d % 1
+        d -= fraction
+        fraction = (fraction * 100).round(0)
+        seconds = d % 60
+        d = (d - seconds) / 60
+        minutes = d % 60
+        d = (d - minutes) / 60
+        hours = d % 60
+
+        d_s = sprintf('%02d:%02d:%02d.%02d', hours, minutes, seconds, fraction)
+
+        puts("#{s} at #{t_end}. Duration was #{d_s} .") unless (@quiet)
     end
 end
 
@@ -612,74 +633,6 @@ def tape_manifest(db, report, tapes, mods)
     end
 end
 
-def tape_scripts(db, report, tapes, mods)
-    tapes.each() do |label|
-        # Get the file data of the involved files.
-        all_files = db.execute("SELECT path, sha1, on_disk FROM files LEFT JOIN links ON links.file_number" +
-            "=files.number LEFT JOIN tapes ON tapes.number=links.tape_number WHERE tapes.label=\"#{label}\"" +
-            " ORDER BY files.path ASC")
-        
-        # Warn if files are no longer on disk. Could be that the tapeset was created long ago and is being re-written
-        # after some files have been removed. In this case we will exclude them from the tape. Exclude these from the
-        # write list at this point.
-        write_files = []
-        all_files.each() do |file|
-            if (file[2] == 0)
-                report.warning("File #{file[0]} is no longer on disk, writing the tape without it.")
-            else
-                write_files << file
-            end
-        end
-
-        begin
-            # Start by writing the manifest, checksums and filelist files.
-            manifest_file = File.open("manifest_#{label}.txt", 'w')
-            checksums_file = File.open("checksums_#{label}.txt", 'w')
-            filelist_file = File.open("filelist_#{label}.txt", 'w')
-
-            filelist_file.puts('manifest.txt')
-            filelist_file.puts('checksums.txt')
-
-            write_files.each() do |file|
-                relative_path = Pathname.new(file[0]).relative_path_from(Pathname.new(
-                    File.expand_path(File.dirname(__FILE__)))).to_s()
-
-                manifest_file.puts(relative_path)
-                filelist_file.puts(relative_path)
-                checksums_file.puts("#{file[1]}  #{relative_path}")
-            end
-
-            # Then produce actual write script.
-            script_file = File.open("write_#{label}.sh", 'w')
-            script_file.puts('#!/bin/bash')
-            script_file.puts("echo \"Writing tape #{label}.\"")
-            script_file.puts("date")
-            script_file.puts("cp manifest_#{label}.txt manifest.txt")
-            script_file.puts("cp checksums_#{label}.txt checksums.txt")
-            script_file.puts("mt-st -f #{mods[:device]} compression 0")
-            if (mods[:verbose])
-                script_file.puts("tar -c -v -f #{mods[:device]} -b 8192 -T filelist_#{label}.txt")
-            else
-                script_file.puts("tar -c -f #{mods[:device]} -b 8192 -T filelist_#{label}.txt")
-            end
-            script_file.puts("mt-st -f #{mods[:device]} rewoffl")
-            script_file.puts("./filetool -m tape -w #{label}")
-            script_file.puts('rm manifest.txt checksums.txt')
-            script_file.puts("echo \"Done.\"")
-            
-            FileUtils.chmod('u+x', "write_#{label}.sh")
-        rescue IOError => e
-            report.error('IOError:' + e.to_s())
-            error = true
-        ensure
-            manifest_file.close() unless manifest_file.nil?
-            checksums_file.close() unless checksums_file.nil?
-            filelist_file.close() unless filelist_file.nil?
-            script_file.close() unless script_file.nil?
-        end
-    end
-end
-
 def tape_written(db, report, tapes)
     now = Time.new().to_i()
     query = "UPDATE tapes SET written=#{now} WHERE"
@@ -715,6 +668,100 @@ def tape_erased(db, report, tapes)
     db.execute(query)
     tapes.each() do |label|
         report.tape_updated(label)
+    end
+end
+
+def tape_write(db, report, tapes, mods)
+    tapes.each() do |label|
+    	begin
+            # Get the file data of the involved files.
+            all_files = db.execute("SELECT path, sha1, on_disk, mtime FROM files LEFT JOIN links ON links.file_number" +
+                "=files.number LEFT JOIN tapes ON tapes.number=links.tape_number WHERE tapes.label=\"#{label}\"" +
+                " ORDER BY files.path ASC")
+            
+            # Filter the list of files to write to tape.
+            write_files = []
+            all_files.each() do |file|
+                on_disk = (file[2] == 1)
+                exists = File.file?(file[0])
+                mtime_ok = exists ? File.mtime(file[0]).to_i() == file[3] : false
+
+                if (on_disk && exists && mtime_ok)
+                    write_files << file
+                else
+                    report.warning("File does not qualify to be written on tape: #{file[0]}")
+                end
+            end
+
+            # Open and make the files.
+            checksums_file = File.open('checksums.txt', 'w')
+            filelist_file = File.open('filelist.txt', 'w')
+            filelist_file.puts('manifest.txt')
+            filelist_file.puts('checksums.txt')
+            write_files.each() do |file|
+                relative_path = Pathname.new(file[0]).relative_path_from(Pathname.new(
+                    File.expand_path(File.dirname(__FILE__)))).to_s()
+
+                filelist_file.puts(relative_path)
+                checksums_file.puts("#{file[1]}  #{relative_path}")
+            end
+	    rescue IOError => e
+		    puts(e)
+	    ensure
+            checksums_file.close() unless checksums_file.nil?
+            filelist_file.close() unless filelist_file.nil?
+	    end
+
+        # Set xattr user.sha1 for complete tar contents.
+        checksums_sha1 = file_sha1('checksums.txt')
+        xattr = Xattr.new('checksums.txt')
+        xattr['user.sha1'] = checksums_sha1
+        manifest_sha1 = file_sha1('manifest.txt')
+        xattr = Xattr.new('manifest.txt')
+        xattr['user.sha1'] = manifest_sha1
+        write_files.each() do |file|
+            xattr = Xattr.new(file[0])
+            xattr['user.sha1'] = file[1]
+        end
+
+        # Set start time.
+        t_start = Time.now()
+        report.time("Start write of tape #{label} on #{mods[:device]}", t_start)
+
+        # Write tape and rewind it if needed.
+        output = `tar -H pax --xattrs -b 8192 -cf #{mods[:device]} -T filelist.txt`
+        unless (output == '')
+            report.error("Tar error: #{output}")
+        end
+        unless (mods[:no_rewind])
+            output = `mt-st -f #{mods[:device]} rewoffl`
+            unless (output == '')
+                report.error("Mt-st error: #{output}")
+            end
+        end
+
+        # Mark tape as written.
+        tape_written(db, report, tapes)
+
+        # Set end time and report.
+        t_end = Time.now()
+        report.duration("Finished writing tape ", t_start, t_end)
+    end
+end
+
+def tape_verify(db, report, tapes, mods)
+    tapes.each() do |label|
+        t_start = Time.now()
+        report.time("Start verify of tape #{label} on #{mods[:device]}", t_start)
+
+        ok = tar_verify(report, mods[:device], 8192)
+
+        if (ok)
+            tape_verified(db, report, tapes)
+        end
+
+        t_end = Time.now()
+        report.duration("Done verifying with result ok=#{ok}", t_start, t_end)
     end
 end
 
@@ -961,6 +1008,160 @@ def tapeset_info(db, names)
 end
 
 #-----------------------------------------------------------------------------------------------------------------------
+# Tar method section
+
+def tar_block_header_checksum_valid?(block)
+	bytes = block.unpack('C*')
+	cksum_bytes = []
+	for i in 0..7
+		cksum_bytes << bytes[i + 148]
+		bytes[i + 148] = 32
+	end
+	cksum_in_block = cksum_bytes.pack('CCCCCC').to_i(8)
+	cksum_calc = 0
+	bytes.each() do |byte|
+		cksum_calc += byte
+	end
+	return cksum_calc == cksum_in_block
+end
+
+def tar_block_header_parse(block)
+	return {
+		:name => block[0..99].strip!(),
+		:mode => block[100..107].strip!(),
+		:uid => block[108..115].strip!(),
+		:gid => block[116..123].strip!(),
+		:size => block[124..135].strip!().to_i(8),
+		:mtime => block[136..147].strip!().to_i(8),
+		:checksum => block[148..155].strip!().to_i(8),
+		:link => block[156],
+		:link_name => block[157..256].strip!(),
+		:ustar => block[257..262].strip!(),
+		:ustar_version => block[263..264].to_i(8),
+		:owner_user => block[265..296].strip!(),
+		:owner_group => block[297..328].strip!(),
+		:dev_major_num => block[329..336].strip!().to_i(8),
+		:dev_minor_num => block[337..344].strip!().to_i(8),
+		:name_prefix => block[345..499].strip!()
+	}
+end
+
+def tar_verify(report, filename, blocking_factor)
+	verified = 0
+	incorrect = 0
+	unknown = 0
+
+	unless (File.readable?(filename))
+        report.error("Can not read file: #{filename}")
+		return false
+	end
+	begin
+		file = File.open(filename, 'rb')
+
+		state = :scan
+		ext_header = nil
+		ext_header_data = ''
+		header = nil
+		processed = 0
+		sha1 = nil
+		digest = nil
+
+		while (true)
+			data_block = file.read(blocking_factor * 512)
+			break if (data_block.nil?)
+
+			case data_block.length()
+			when (blocking_factor * 512)
+				# Data block.
+				left = data_block.length()
+				offset = 0
+				while (left > 0)
+					block = data_block[offset..(offset + 511)]
+
+					case state
+					when :scan
+						if (tar_block_header_checksum_valid?(block))
+							x = tar_block_header_parse(block)
+							if (x[:link] == 'x') # Check for extended header.
+								ext_header = x
+								processed = 0
+								state = :ext
+							elsif (x[:link] == '0') # Check for file header.
+								header = x
+								processed = 0
+								digest = Digest::SHA1.new()
+								state = :file
+							end		
+						end
+					when :ext
+						ext_header_data += block
+						processed += 512
+						if (processed >= ext_header[:size])
+							entries = ext_header_data.strip().split("\n")
+							sha1 = nil
+							entries.each() do |entry|
+								if (entry =~ /xattr\.user\.sha1=[0-9a-fA-F]{40}/)
+									sha1 = entry.match(/[0-9a-fA-F]{40}/).to_s()
+									break
+								end
+							end
+							ext_header_data = ''
+							state = :scan
+						end
+					when :file
+						digest_length = [512, (header[:size] - processed)].min()
+						# If block is here to speedupify the digest. No need to copy bytes if full block is digested.
+						if (digest_length != 512)
+							digest.update(block[0..(digest_length - 1)])
+						else
+							digest.update(block)
+						end
+
+						processed += 512
+						if (processed >= header[:size])
+							calc_sha1 = digest.hexdigest()
+							if (sha1.nil?())
+								report.info("#{calc_sha1}  #{header[:name]}")
+								unknown += 1
+							else
+								unless (sha1 == calc_sha1)
+									report.error("Checksum mismatch: #{calc_sha1} #{header[:name_prefix]}" +
+                                        "#{header[:name]}")
+									incorrect += 1
+								end
+							end
+
+							verified += 1
+
+							state = :scan
+						end
+					end
+					
+					left -= 512
+					offset += 512
+				end
+			when 0
+				# At EOF.
+				break
+			else
+				# Cut off tar.
+				report.error('Truncated tar.')
+				break
+			end
+		end
+
+		report.info("Tar verified. Files: #{verified}, Correct: #{verified - incorrect - unknown}, Incorrect:" + 
+            " #{incorrect}, Unknown: #{unknown}")
+	rescue IOError => e
+		report.error(e.to_s())
+	ensure
+		file.close() if (file)
+	end
+
+    return (incorrect == 0)
+end
+
+#-----------------------------------------------------------------------------------------------------------------------
 # Tool method section
 
 def tool_parse_command_line(exec, mods)
@@ -1011,6 +1212,9 @@ def tool_parse_command_line(exec, mods)
         options.on('-I', '--incremental', 'Selects incremental tapeset mode.') do ||
             mods[:incremental] = true
         end
+        options.on('-N', '--no-rewind-offline', 'Instructs to not rewind & eject the tape.') do ||
+            mods[:no_rewind] = true
+        end
 
         options.separator('')
         options.separator('Actions:')
@@ -1040,16 +1244,19 @@ def tool_parse_command_line(exec, mods)
         options.on('-c', '--check', 'Checks the specified item.') do ||
             exec[:action] = 'check'
         end
-        options.on('-s', '--scripts', 'Creates the write, erase and verify scripts for the tape.') do ||
-            exec[:action] = 'scripts'
+        options.on('-w', '--write', 'Writes the tape.') do ||
+            exec[:action] = 'write'
         end
-        options.on('-w', '--mark-written', 'Marks the tapes as written.') do ||
+        options.on('-V', '--verify', 'Verifies the tape.') do ||
+            exec[:action] = 'verify'
+        end
+        options.on(nil, '--mark-written', 'Marks the tapes as written.') do ||
             exec[:action] = 'written'
         end
-        options.on('-V', '--mark-verified', 'Marks the tapes as verified.') do ||
+        options.on(nil, '--mark-verified', 'Marks the tapes as verified.') do ||
             exec[:action] = 'verified'
         end
-        options.on('-e', '--mark-erased', 'Marks the tapes as erased.') do ||
+        options.on(nil, '--mark-erased', 'Marks the tapes as erased.') do ||
             exec[:action] = 'erased'
         end
 
@@ -1058,7 +1265,7 @@ def tool_parse_command_line(exec, mods)
 
         # Show usage if no options specified.
         options.on_tail('-h', '--help', 'Displays this help message.') do || 
-            puts(options) 
+            puts(options)
         end
     end
     parser.parse!
@@ -1083,10 +1290,10 @@ def tool_validate_command_line(exec, mods, report)
 
     # Check mode, and if actions are allowed in the mode.
     illegal = { \
-        'file' => %w[manifest prune scripts written verified erased], \
-        'path' => %w[manifest scripts written verified erased], \
+        'file' => %w[manifest prune written verified erased write verify], \
+        'path' => %w[manifest written verified erased write verify], \
         'tape' => %w[prune check], \
-        'tapeset' => %w[manifest prune check scripts written verified erased] \
+        'tapeset' => %w[manifest prune check written verified erased write verify] \
     }
     if (illegal[exec[:mode]] == nil)
         report.error("Unsupported mode #{exec[:mode]} specified.")
@@ -1097,7 +1304,7 @@ def tool_validate_command_line(exec, mods, report)
     end
 
     # Check action.
-    legal = %w[add update remove list info manifest prune check scripts written verified erased]
+    legal = %w[add update remove list info manifest prune check written verified erased write verify]
     unless (legal.include?(exec[:action]))
         report.error("Unsupported action #{exec[:action]} specified.")
         return false
@@ -1106,8 +1313,12 @@ def tool_validate_command_line(exec, mods, report)
     # Check if correct number of items is specified.
     min = ((exec[:action] == 'list') || (exec[:action] == 'info')) ? 0 : 1
     max = ((exec[:action] == 'update') && ((exec[:mode] == 'tape') || (exec[:mode] == 'tapeset'))) ? 1 : -1
+    case exec[:action]
+    when 'write', 'verify'
+        max = 1
+    end
     if (exec[:items].length() < min)
-        report.error("EAt least #{min} items must be specified.")
+        report.error("At least #{min} items must be specified.")
         return false
     end
     if (max > -1) && (exec[:items].length() > max)
@@ -1149,13 +1360,13 @@ def tool_validate_command_line(exec, mods, report)
     end
 
     # Check if device is set properly when in tape mode and scripts is selected.
-    actions = %w[scripts]
+    actions = %w[write verify]
     if ((exec[:mode] == 'tape') && (actions.include?(exec[:action])))
         if (mods[:device].empty?())
             report.error('No tape streamer device specified.')
             return false
         end
-        unless (File.writable?(mods[:device]))
+        unless (File.readable?(mods[:device]) && File.writable?(mods[:device]))
             report.error("Invalid tape streamer device specified : #{mods[:device]}.")
             return false
         end
@@ -1248,8 +1459,10 @@ begin
                 tape_info(db, exec[:items])
             when 'manifest'
                 tape_manifest(db, report, exec[:items], mods)
-            when 'scripts'
-                tape_scripts(db, report, exec[:items], mods)
+            when 'write'
+                tape_write(db, report, exec[:items], mods)
+            when 'verify'
+                tape_verify(db, report, exec[:items], mods)
             when 'written'
                 tape_written(db, report, exec[:items])
             when 'verified'
