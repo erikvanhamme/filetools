@@ -218,10 +218,10 @@ def db_create_version_table(db, version, db_version)
 end
 
 def db_create_files_table(db)
-	db.execute('CREATE TABLE IF NOT EXISTS files(number INTEGER PRIMARY KEY, sha1 TEXT, size INTEGER, mtime INTEGER,' +
+    db.execute('CREATE TABLE IF NOT EXISTS files(number INTEGER PRIMARY KEY, sha1 TEXT, size INTEGER, mtime INTEGER,' +
         ' path TEXT, on_disk INTEGER)')
-	db.execute('CREATE INDEX IF NOT EXISTS files_sha1 ON files(sha1)')
-	db.execute('CREATE INDEX IF NOT EXISTS files_path ON files(path)')
+    db.execute('CREATE INDEX IF NOT EXISTS files_sha1 ON files(sha1)')
+    db.execute('CREATE INDEX IF NOT EXISTS files_path ON files(path)')
 end
 
 def db_create_tapes_table(db)
@@ -435,8 +435,8 @@ end
 def path_add(db, report, paths)
     files = []
     paths.each() do |dir|
-	    Find.find(dir) do |path|
-		    if (File.file?(path))
+        Find.find(dir) do |path|
+            if (File.file?(path))
                 files << path
             end
         end
@@ -447,8 +447,8 @@ end
 def path_update(db, report, paths)
     files = []
     paths.each() do |dir|
-	    Find.find(dir) do |path|
-		    if (File.file?(path))
+        Find.find(dir) do |path|
+            if (File.file?(path))
                 files << path
             end
         end
@@ -459,8 +459,8 @@ end
 def path_remove(db, report, paths)
     files = []
     paths.each() do |dir|
-	    Find.find(dir) do |path|
-		    if (File.file?(path))
+        Find.find(dir) do |path|
+            if (File.file?(path))
                 files << path
             end
         end
@@ -498,8 +498,8 @@ end
 def path_check(db, report, paths)
     files = []
     paths.each() do |dir|
-	    Find.find(dir) do |path|
-		    if (File.file?(path))
+        Find.find(dir) do |path|
+            if (File.file?(path))
                 files << path
             end
         end
@@ -673,7 +673,7 @@ end
 
 def tape_write(db, report, tapes, mods)
     tapes.each() do |label|
-    	begin
+        begin
             # Get the file data of the involved files.
             all_files = db.execute("SELECT path, sha1, on_disk, mtime FROM files LEFT JOIN links ON links.file_number" +
                 "=files.number LEFT JOIN tapes ON tapes.number=links.tape_number WHERE tapes.label=\"#{label}\"" +
@@ -705,12 +705,12 @@ def tape_write(db, report, tapes, mods)
                 manifest_file.puts(relative_path)
                 checksums_file.puts("#{file[1]}  #{relative_path}")
             end
-	    rescue IOError => e
-		    puts(e)
-	    ensure
+        rescue IOError => e
+            puts(e)
+        ensure
             checksums_file.close() unless checksums_file.nil?
             manifest_file.close() unless manifest_file.nil?
-	    end
+        end
 
         # Set xattr user.sha1 for complete tar contents.
         checksums_sha1 = file_sha1('checksums.txt')
@@ -1011,158 +1011,158 @@ end
 # Tar method section
 
 def tar_block_header_checksum_valid?(block)
-	bytes = block.unpack('C*')
-	cksum_bytes = []
-	for i in 0..7
-		cksum_bytes << bytes[i + 148]
-		bytes[i + 148] = 32
-	end
-	cksum_in_block = cksum_bytes.pack('CCCCCC').to_i(8)
-	cksum_calc = 0
-	bytes.each() do |byte|
-		cksum_calc += byte
-	end
-	return cksum_calc == cksum_in_block
+    bytes = block.unpack('C*')
+    cksum_bytes = []
+    for i in 0..7
+        cksum_bytes << bytes[i + 148]
+        bytes[i + 148] = 32
+    end
+    cksum_in_block = cksum_bytes.pack('CCCCCC').to_i(8)
+    cksum_calc = 0
+    bytes.each() do |byte|
+        cksum_calc += byte
+    end
+    return cksum_calc == cksum_in_block
 end
 
 def tar_block_header_parse(block)
-	return {
-		:name => block[0..99].strip!(),
-		:mode => block[100..107].strip!(),
-		:uid => block[108..115].strip!(),
-		:gid => block[116..123].strip!(),
-		:size => block[124..135].strip!().to_i(8),
-		:mtime => block[136..147].strip!().to_i(8),
-		:checksum => block[148..155].strip!().to_i(8),
-		:link => block[156],
-		:link_name => block[157..256].strip!(),
-		:ustar => block[257..262].strip!(),
-		:ustar_version => block[263..264].to_i(8),
-		:owner_user => block[265..296].strip!(),
-		:owner_group => block[297..328].strip!(),
-		:dev_major_num => block[329..336].strip!().to_i(8),
-		:dev_minor_num => block[337..344].strip!().to_i(8),
-		:name_prefix => block[345..499].strip!()
-	}
+    return {
+        :name => block[0..99].strip!(),
+        :mode => block[100..107].strip!(),
+        :uid => block[108..115].strip!(),
+        :gid => block[116..123].strip!(),
+        :size => block[124..135].strip!().to_i(8),
+        :mtime => block[136..147].strip!().to_i(8),
+        :checksum => block[148..155].strip!().to_i(8),
+        :link => block[156],
+        :link_name => block[157..256].strip!(),
+        :ustar => block[257..262].strip!(),
+        :ustar_version => block[263..264].to_i(8),
+        :owner_user => block[265..296].strip!(),
+        :owner_group => block[297..328].strip!(),
+        :dev_major_num => block[329..336].strip!().to_i(8),
+        :dev_minor_num => block[337..344].strip!().to_i(8),
+        :name_prefix => block[345..499].strip!()
+    }
 end
 
 def tar_verify(report, filename, blocking_factor)
-	verified = 0
-	incorrect = 0
-	unknown = 0
+    verified = 0
+    incorrect = 0
+    unknown = 0
 
-	unless (File.readable?(filename))
+    unless (File.readable?(filename))
         report.error("Can not read file: #{filename}")
-		return false
-	end
-	begin
-		file = File.open(filename, 'rb')
+        return false
+    end
+    begin
+        file = File.open(filename, 'rb')
 
-		state = :scan
-		ext_header = nil
-		ext_header_data = ''
-		ext_header_file_size = nil
-		header = nil
-		processed = 0
-		sha1 = nil
-		digest = nil
+        state = :scan
+        ext_header = nil
+        ext_header_data = ''
+        ext_header_file_size = nil
+        header = nil
+        processed = 0
+        sha1 = nil
+        digest = nil
 
-		while (true)
-			data_block = file.read(blocking_factor * 512)
-			break if (data_block.nil?)
+        while (true)
+            data_block = file.read(blocking_factor * 512)
+            break if (data_block.nil?)
 
-			case data_block.length()
-			when (blocking_factor * 512)
-				# Data block.
-				left = data_block.length()
-				offset = 0
-				while (left > 0)
-					block = data_block[offset..(offset + 511)]
+            case data_block.length()
+            when (blocking_factor * 512)
+                # Data block.
+                left = data_block.length()
+                offset = 0
+                while (left > 0)
+                    block = data_block[offset..(offset + 511)]
 
-					case state
-					when :scan
-						if (tar_block_header_checksum_valid?(block))
-							x = tar_block_header_parse(block)
-							if (x[:link] == 'x') # Check for extended header.
-								ext_header = x
-								ext_header_file_size = nil
-								processed = 0
-								state = :ext
-							elsif (x[:link] == '0') # Check for file header.
-								header = x
-								header[:size] = ext_header_file_size unless (ext_header_file_size.nil?())
-								processed = 0
-								digest = Digest::SHA1.new()
-								state = :file
-							end		
-						end
-					when :ext
-						ext_header_data += block
-						processed += 512
-						if (processed >= ext_header[:size])
-							entries = ext_header_data.strip().split("\n")
-							sha1 = nil
-							entries.each() do |entry|
-								if (entry =~ /xattr\.user\.sha1=[0-9a-fA-F]{40}/)
-									sha1 = entry.match(/[0-9a-fA-F]{40}/).to_s()
-								end
-								if (entry =~ /[0-9]+ size=[0-9]+/)
-									numbers = entry.scan(/[0-9]+/)
-									ext_header_file_size = numbers.last().to_i()
-								end
-							end
-							ext_header_data = ''
-							state = :scan
-						end
-					when :file
-						digest_length = [512, (header[:size] - processed)].min()
-						# If block is here to speedupify the digest. No need to copy bytes if full block is digested.
-						if (digest_length != 512)
-							digest.update(block[0..(digest_length - 1)])
-						else
-							digest.update(block)
-						end
+                    case state
+                    when :scan
+                        if (tar_block_header_checksum_valid?(block))
+                            x = tar_block_header_parse(block)
+                            if (x[:link] == 'x') # Check for extended header.
+                                ext_header = x
+                                ext_header_file_size = nil
+                                processed = 0
+                                state = :ext
+                            elsif (x[:link] == '0') # Check for file header.
+                                header = x
+                                header[:size] = ext_header_file_size unless (ext_header_file_size.nil?())
+                                processed = 0
+                                digest = Digest::SHA1.new()
+                                state = :file
+                            end        
+                        end
+                    when :ext
+                        ext_header_data += block
+                        processed += 512
+                        if (processed >= ext_header[:size])
+                            entries = ext_header_data.strip().split("\n")
+                            sha1 = nil
+                            entries.each() do |entry|
+                                if (entry =~ /xattr\.user\.sha1=[0-9a-fA-F]{40}/)
+                                    sha1 = entry.match(/[0-9a-fA-F]{40}/).to_s()
+                                end
+                                if (entry =~ /[0-9]+ size=[0-9]+/)
+                                    numbers = entry.scan(/[0-9]+/)
+                                    ext_header_file_size = numbers.last().to_i()
+                                end
+                            end
+                            ext_header_data = ''
+                            state = :scan
+                        end
+                    when :file
+                        digest_length = [512, (header[:size] - processed)].min()
+                        # If block is here to speedupify the digest. No need to copy bytes if full block is digested.
+                        if (digest_length != 512)
+                            digest.update(block[0..(digest_length - 1)])
+                        else
+                            digest.update(block)
+                        end
 
-						processed += 512
-						if (processed >= header[:size])
-							calc_sha1 = digest.hexdigest()
-							if (sha1.nil?())
-								report.info("#{calc_sha1}  #{header[:name]}")
-								unknown += 1
-							else
-								unless (sha1 == calc_sha1)
-									report.error("Checksum mismatch: #{calc_sha1} #{header[:name_prefix]}" +
+                        processed += 512
+                        if (processed >= header[:size])
+                            calc_sha1 = digest.hexdigest()
+                            if (sha1.nil?())
+                                report.info("#{calc_sha1}  #{header[:name]}")
+                                unknown += 1
+                            else
+                                unless (sha1 == calc_sha1)
+                                    report.error("Checksum mismatch: #{calc_sha1} #{header[:name_prefix]}" +
                                         "#{header[:name]}")
-									incorrect += 1
-								end
-							end
+                                    incorrect += 1
+                                end
+                            end
 
-							verified += 1
+                            verified += 1
 
-							state = :scan
-						end
-					end
-					
-					left -= 512
-					offset += 512
-				end
-			when 0
-				# At EOF.
-				break
-			else
-				# Cut off tar.
-				report.error('Truncated tar.')
-				break
-			end
-		end
+                            state = :scan
+                        end
+                    end
+                    
+                    left -= 512
+                    offset += 512
+                end
+            when 0
+                # At EOF.
+                break
+            else
+                # Cut off tar.
+                report.error('Truncated tar.')
+                break
+            end
+        end
 
-		report.info("Tar verified. Files: #{verified}, Correct: #{verified - incorrect - unknown}, Incorrect:" + 
+        report.info("Tar verified. Files: #{verified}, Correct: #{verified - incorrect - unknown}, Incorrect:" + 
             " #{incorrect}, Unknown: #{unknown}")
-	rescue IOError => e
-		report.error(e.to_s())
-	ensure
-		file.close() if (file)
-	end
+    rescue IOError => e
+        report.error(e.to_s())
+    ensure
+        file.close() if (file)
+    end
 
     return (incorrect == 0)
 end
