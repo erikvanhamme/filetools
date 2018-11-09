@@ -695,21 +695,21 @@ def tape_write(db, report, tapes, mods)
 
             # Open and make the files.
             checksums_file = File.open('checksums.txt', 'w')
-            filelist_file = File.open('filelist.txt', 'w')
-            filelist_file.puts('manifest.txt')
-            filelist_file.puts('checksums.txt')
+            manifest_file = File.open('manifest.txt', 'w')
+            manifest_file.puts('manifest.txt')
+            manifest_file.puts('checksums.txt')
             write_files.each() do |file|
                 relative_path = Pathname.new(file[0]).relative_path_from(Pathname.new(
                     File.expand_path(File.dirname(__FILE__)))).to_s()
 
-                filelist_file.puts(relative_path)
+                manifest_file.puts(relative_path)
                 checksums_file.puts("#{file[1]}  #{relative_path}")
             end
 	    rescue IOError => e
 		    puts(e)
 	    ensure
             checksums_file.close() unless checksums_file.nil?
-            filelist_file.close() unless filelist_file.nil?
+            manifest_file.close() unless manifest_file.nil?
 	    end
 
         # Set xattr user.sha1 for complete tar contents.
@@ -729,7 +729,7 @@ def tape_write(db, report, tapes, mods)
         report.time("Start write of tape #{label} on #{mods[:device]}", t_start)
 
         # Write tape and rewind it if needed.
-        output = `tar -H pax --xattrs -b 8192 -cf #{mods[:device]} -T filelist.txt`
+        output = `tar -H pax --xattrs -b 8192 -cf #{mods[:device]} -T manifest.txt`
         unless (output == '')
             report.error("Tar error: #{output}")
         end
