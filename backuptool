@@ -35,7 +35,7 @@ class Report
     end
 
     def tool_init(version, db_version)
-        puts("Filetool (version: #{version}, db_version: #{db_version})") unless (@quiet)
+        puts("Backuptool (version: #{version}, db_version: #{db_version})") unless (@quiet)
     end
 
     def db_create()
@@ -302,9 +302,9 @@ end
 
 def db_init(report, version, db_version, async, wrapper = nil)
     if (wrapper.nil?)
-        db = SQLite3::Database.new("filetool.db")
+        db = SQLite3::Database.new("backuptool.db")
     else
-        wrapper.wrap(SQLite3::Database.new("filetool.db"))
+        wrapper.wrap(SQLite3::Database.new("backuptool.db"))
         db = wrapper
     end
 
