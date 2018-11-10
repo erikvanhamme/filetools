@@ -617,7 +617,7 @@ def tape_info(db, tapes)
             tar_footer_size = (8192 * 512) - modulo
         end
         tar_size = tar_size_no_footer + tar_footer_size
-        used = (tar_size.to_f() / (tape[2].to_f() * 0.95)) * 100
+        used = (tar_size.to_f() / (tape[2].to_f() * 0.99)) * 100
         overhead += tar_footer_size
 
         w = tape[5].nil? ? nil : Time.at(tape[5])
@@ -841,25 +841,26 @@ def tapeset_add(db, report, paths, mods)
     # TODO: This is bad, find a way to deal with tapes of different sizes.
     first_tape_size = db.get_first_value('SELECT size FROM tapes')
 
-    # Reduce tape size with 5% to make room for TAR blocking overhead.
-    first_tape_size = (0.95 * first_tape_size).to_i()
+    # Reduce tape size with 1% to make room for TAR overhead.
+    first_tape_size = (0.99 * first_tape_size).to_i()
 
     # Get smallest integer number of tapes that will fit the data.
     tapes_needed = (accumulator.to_f() / first_tape_size).ceil()
 
-    # Add the average file size here to give the bin packing algorithm some wriggle room.
-    bytes_per_tape = (accumulator / tapes_needed) + average_size
+    # Determine bytes per tape.
+    if (mods[:no_level])
+        bytes_per_tape = first_tape_size
+    else
+        # Add the average file size here to give the bin packing algorithm some wriggle room.
+        bytes_per_tape = (accumulator / tapes_needed) + average_size
+    end
 
     # Prepare.
     tape_contents = []
     tape_bytes_left = []
-    tape_bytes_files = []
-    tape_bytes_overhead = []
     for i in 0..(tapes_needed - 1)
         tape_contents[i] = []
         tape_bytes_left[i] = bytes_per_tape
-        tape_bytes_files[i] = 0
-        tape_bytes_overhead[i] = 0
     end
 
     # Actual bin packing of files.
@@ -873,8 +874,6 @@ def tapeset_add(db, report, paths, mods)
             if (tape_bytes_left[j] > (file_size + overhead + 1024)) # Add 1024 bytes for the tarball footer.
                 tape_contents[j] << files[i]
                 tape_bytes_left[j] -= (file_size + overhead)
-                tape_bytes_files[j] += file_size
-                tape_bytes_overhead[j] += overhead
                 stored = true
                 break
             end
@@ -1248,6 +1247,9 @@ def tool_parse_command_line(exec, mods)
         options.on('-N', '--no-rewind-offline', 'Instructs to not rewind & eject the tape.') do ||
             mods[:no_rewind] = true
         end
+        options.on(nil, '--no-level', 'Instructs to not balance the files over the tapes.') do ||
+            mods[:no_level] = true
+        end
 
         options.separator('')
         options.separator('Actions:')
@@ -1424,8 +1426,8 @@ begin
     version = 2
     db_version = 2
     exec = {:mode => '', :action => '', :items => []}
-    mods = {:verbose => false, :quiet => false, :relative => false, :duplicates => false, :sets => 1, :ffd => true, 
-        :name => '', :async => false, :device => '', :incremental => false}
+    mods = {:verbose => false, :quiet => false, :relative => false, :duplicates => false, :sets => 1, :ffd => false, 
+        :name => '', :async => false, :device => '', :incremental => false, :no_level => false}
     db = nil
     
     # Parse and validate command line.
