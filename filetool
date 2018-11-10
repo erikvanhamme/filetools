@@ -1093,7 +1093,26 @@ def tar_verify(report, filename, blocking_factor)
                                 header[:size] = ext_header_file_size unless (ext_header_file_size.nil?())
                                 processed = 0
                                 digest = Digest::SHA1.new()
-                                state = :file
+                                # Handle the special case of 0-length files in the tarball.
+                                if (header[:size] == 0)
+                                    calc_sha1 = digest.hexdigest()
+                                    if (sha1.nil?())
+                                        report.info("#{calc_sha1}  #{header[:name]}")
+                                        unknown += 1
+                                    else
+                                        unless (sha1 == calc_sha1)
+                                            report.error("Checksum mismatch: #{calc_sha1} #{header[:name_prefix]}" +
+                                                "#{header[:name]}")
+                                            incorrect += 1
+                                        end
+                                    end
+
+                                    verified += 1
+
+                                    state = :scan
+                                else
+                                    state = :file
+                                end
                             end        
                         end
                     when :ext
