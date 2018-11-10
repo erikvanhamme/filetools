@@ -517,16 +517,32 @@ def tape_valid_label?(label)
 
     # Taken LTO tape label spec from:
     # https://www.ibm.com/support/knowledgecenter/en/STCMML8/com.ibm.storage.ts3500.doc/ipg_3584_mehlab.html
-    # Only supporting LTO1-LTO8 for now.
-    return label =~ /[A-Z0-9]{6}[L]{1}[1-8]{1}/
+    # Only supporting LTO1-LTO8(+M8) for now.
+    return (label =~ /[A-Z0-9]{6}[L]{1}[1-8]{1}/) || (label =~ /[A-Z0-9]{6}M8/)
 end
 
 def tape_size(label)
     size = 0
     suffix = label.split(//).last(2).join()
     case suffix
+    when 'L1'
+        size = 100000000000
+    when 'L2'
+        size = 200000000000
+    when 'L3'
+        size = 400000000000
     when 'L4'
         size = 800000000000
+    when 'L5'
+        size = 1500000000000
+    when 'L6'
+        size = 2500000000000
+    when 'L7'
+        size = 6000000000000
+    when 'L8'
+        size = 12000000000000
+    when 'M8'
+        size = 9000000000000
     end
     return size
 end
@@ -619,6 +635,11 @@ def tape_info(db, tapes)
         tar_size = tar_size_no_footer + tar_footer_size
         used = (tar_size.to_f() / (tape[2].to_f() * 0.99)) * 100
         overhead += tar_footer_size
+
+        if (files.length() == 0)
+            tar_size = 0
+            overhead = 0
+        end
 
         w = tape[5].nil? ? nil : Time.at(tape[5])
         v = tape[6].nil? ? nil : Time.at(tape[6])
