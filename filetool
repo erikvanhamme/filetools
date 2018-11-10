@@ -604,19 +604,30 @@ def tape_info(db, tapes)
         files = db.execute(query)
 
         size = 0
+        overhead = 0
         files.each() do |file|
             size += file[0]
+            overhead += (512 * 3) + (512 - (file[0] % 512))
         end
-        used = (size.to_f() / (tape[2].to_f() * 0.95)) * 100
+        tar_size_no_footer = size + overhead
+        modulo = tar_size_no_footer % (8192 * 512)
+        if (modulo < 1024)
+            tar_footer_size = (8192 * 512) + modulo
+        else
+            tar_footer_size = (8192 * 512) - modulo
+        end
+        tar_size = tar_size_no_footer + tar_footer_size
+        used = (tar_size.to_f() / (tape[2].to_f() * 0.95)) * 100
+        overhead += tar_footer_size
 
         w = tape[5].nil? ? nil : Time.at(tape[5])
         v = tape[6].nil? ? nil : Time.at(tape[6])
 
-        {:label => tape[1], :files => files.length(), :size => size, :capacity => tape[2], 
-            :usage => "#{used.round(1)} %", :tapeset_idx => tape[3], :tapeset => tape[4], :written => w, 
-            :verified => v}
+        {:label => tape[1], :files => files.length(), :size => size, :tar_size => tar_size, :overhead => overhead,
+            :capacity => tape[2], :usage => "#{used.round(1)} %", :ts_idx => tape[3], :tapeset => tape[4], 
+            :written => w, :verified => v}
     end
-    tp(tapes, :label, :files, :size, :capacity, :usage, :tapeset_idx, :tapeset, :written, :verified)
+    tp(tapes, :label, :files, :size, :tar_size, :overhead, :capacity, :usage, :ts_idx, :tapeset, :written, :verified)
 end
 
 def tape_manifest(db, report, tapes, mods)
@@ -823,6 +834,7 @@ def tapeset_add(db, report, paths, mods)
     accumulator = 0
     files.each() do |file|
         accumulator += file[2]
+        accumulator += (3 * 512) # Tar header overhead.
     end
     average_size = accumulator / files.length()
 
@@ -841,20 +853,28 @@ def tapeset_add(db, report, paths, mods)
     # Prepare.
     tape_contents = []
     tape_bytes_left = []
+    tape_bytes_files = []
+    tape_bytes_overhead = []
     for i in 0..(tapes_needed - 1)
         tape_contents[i] = []
         tape_bytes_left[i] = bytes_per_tape
+        tape_bytes_files[i] = 0
+        tape_bytes_overhead[i] = 0
     end
 
     # Actual bin packing of files.
     file_count = files.length()
     for i in 0..(file_count - 1)
-        file_size = (files[i][2]) + 512 # 512 bytes of overhead for each file in the tarball.
+        overhead = (512 * 3) + (512 - (files[i][2] % 512))
+        file_size = (files[i][2])
+
         stored = false
         for j in 0..(tapes_needed - 1)
-            if (tape_bytes_left[j] > (file_size + 1024)) # Add 1024 bytes here to allow the tarball footer to fit.
+            if (tape_bytes_left[j] > (file_size + overhead + 1024)) # Add 1024 bytes for the tarball footer.
                 tape_contents[j] << files[i]
-                tape_bytes_left[j] -= file_size
+                tape_bytes_left[j] -= (file_size + overhead)
+                tape_bytes_files[j] += file_size
+                tape_bytes_overhead[j] += overhead
                 stored = true
                 break
             end
@@ -865,26 +885,7 @@ def tapeset_add(db, report, paths, mods)
         end
     end
 
-    # 4. Report tape info, unless in quiet mode.
-    unless (mods[:quiet])
-        for i in 0..(tapes_needed - 1)
-            tar_headers = tape_contents[i].length() * 512
-            tar_size_no_footer = bytes_per_tape - tape_bytes_left[i]
-            modulo = tar_size_no_footer % (8192 * 512)
-            bytes_on_tape = 0
-            if (modulo < 1024)
-                bytes_on_tape = tar_size_no_footer + modulo + (8192 * 512)
-            else
-                bytes_on_tape = tar_size_no_footer - modulo + (8192 * 512)
-            end
-            tape_use_percentage =  (bytes_on_tape.to_f / first_tape_size) * 100
-            tar_overhead = bytes_on_tape - tar_size_no_footer + tar_headers
-            report.msg("Tape #{i} holds #{bytes_on_tape} bytes in #{tape_contents[i].length()} files and is used" +
-                " [#{tape_use_percentage.round(2)}]%. Tarball overhead is #{tar_overhead} bytes.")
-        end
-    end
-
-    # 5. Check if enough tapes are available.
+    # 4. Check if enough tapes are available.
     tapes_required = tapes_needed * mods[:sets]
     free_tapes = db.execute('SELECT * FROM tapes WHERE tapeset_idx=-1 ORDER BY label ASC')
     tapes_required = tapes_needed * mods[:sets]        
@@ -893,8 +894,9 @@ def tapeset_add(db, report, paths, mods)
         return
     end
 
-    # 6. Create tapesets in database.
+    # 5. Create tapesets in database.
     tape_index = 0
+    tapes_used = []
     for set in 0..(mods[:sets] - 1)
         db.execute("INSERT INTO tapesets (name, tape_count) VALUES (\"#{tapeset_names[set]}\", #{tapes_needed})")
         report.tapeset_added(tapeset_names[set])
@@ -911,9 +913,15 @@ def tapeset_add(db, report, paths, mods)
                 report.link_added(file[4], free_tapes[tape_index][1], tapeset_names[set])
             end
 
+            tapes_used << free_tapes[tape_index][1]
+
             tape_index += 1
         end
     end
+
+    # 6. List info about new used tapes.
+    report.msg('Tapeset(s) created:')
+    tape_info(db, tapes_used) unless (mods[:quiet])
 end
 
 def tapeset_update(db, report, old_name, new_name)
