@@ -14,6 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+require 'colorize'
 require 'digest/sha1'
 require 'ffi-xattr'
 require 'fileutils'
@@ -35,15 +36,15 @@ class Report
     end
 
     def tool_init(version, db_version)
-        puts("Backuptool (version: #{version}, db_version: #{db_version})") unless (@quiet)
+        puts("Backuptool (version: #{version}, db_version: #{db_version})".cyan()) unless (@quiet)
     end
 
     def db_create()
-        puts('New database created.') unless (@quiet)
+        warning('New database created.') unless (@quiet)
     end
 
     def db_increment(from)
-        puts("Database schema update from #{from} to #{from + 1}.") unless (@quiet)
+        warning("Database schema update from #{from} to #{from + 1}.")
     end
 
     def db_incompatible(version_expected, version, db_version_expected, db_version)
@@ -52,12 +53,12 @@ class Report
     end
 
     def db_async()
-        puts('Database in asynchronous mode.') unless (@quiet)
+        warning('Database in asynchronous mode.') unless (@quiet)
     end
 
     def db_init(files, tapes, tapesets, links)
         data = [{files: files, tapes: tapes, tapesets: tapesets, links: links}]
-        puts('Database initialized. Contents:') if (@verbose)
+        puts('Database loaded. Contents:') if (@verbose)
         tp(data, data[0].keys) if (@verbose)
     end
 
@@ -67,65 +68,66 @@ class Report
 
     def file_added(absolute_path)
         @r[:f_add] += 1
-        puts("File #{absolute_path} was added.") if (@verbose)
+        puts("File #{absolute_path} was added.".blue()) if (@verbose)
     end
 
     def file_updated(absolute_path)
         @r[:f_up] += 1
-        puts("File #{absolute_path} was updated.") if (@verbose)
+        puts("File #{absolute_path} was updated.".blue()) if (@verbose)
     end
 
     def file_removed(absolute_path)
         @r[:f_rm] += 1
-        puts("File #{absolute_path} was removed.") if (@verbose)
+        puts("File #{absolute_path} was removed.".blue()) if (@verbose)
     end
 
     def file_duplicate(db_absolute_path, match_absolute_path)
-        puts("Duplicate file: master=#{db_absolute_path} duplicate=#{match_absolute_path}")
+        msg("Duplicate file: master=#{db_absolute_path} duplicate=#{match_absolute_path}")
     end
 
     def tape_added(label)
         @r[:t_add] += 1
-        puts("Tape #{label} added.") if (@verbose)
+        puts("Tape #{label} added.".blue()) if (@verbose)
     end
 
     def tape_updated(label)
         @r[:t_up] += 1
-        puts("Tape #{label} updated.") if (@verbose)
+        puts("Tape #{label} updated.".blue()) if (@verbose)
     end
     
     def tape_removed(label)
         @r[:t_rm] += 1
-        puts("Tape #{label} removed.") if (@verbose)
+        puts("Tape #{label} removed.".blue()) if (@verbose)
     end
 
     def tapeset_added(name)
         @r[:s_add] += 1
-        puts("Tapeset #{name} added.") if (@verbose)
+        puts("Tapeset #{name} added.".blue()) if (@verbose)
     end
 
     def tapeset_updated(name)
         @r[:s_up] += 1
-        puts("Tapeset #{name} updated.") if (@verbose)
+        puts("Tapeset #{name} updated.".blue()) if (@verbose)
     end
 
     def tapeset_removed(name)
         @r[:s_rm] += 1
-        puts("Tapeset #{name} removed.") if (@verbose)
+        puts("Tapeset #{name} removed.".blue()) if (@verbose)
     end
 
     def link_added(path, label, tapeset)
         @r[:l_add] += 1
-        puts("Link added: #{path} #{label} #{tapeset}") if (@verbose)
+        puts("Link added: #{path} #{label} #{tapeset}".blue()) if (@verbose)
     end
 
     def link_removed(path, label, tapeset)
         @r[:l_rm] += 1
-        puts("Link removed: #{path} #{label} #{tapeset}") if (@verbose)
+        puts("Link removed: #{path} #{label} #{tapeset}".blue()) if (@verbose)
     end
 
     def finalize()
         if (@verbose)
+            puts('Report:')
             if ((@r.values.inject(0) do |sum, x| sum + x end) > 0)
                 tp([@r], @r.keys)
             else
@@ -139,19 +141,19 @@ class Report
     end
 
     def info(s)
-        puts(s) unless (@quiet)
+        puts(s.green()) unless (@quiet)
     end
 
     def warning(s)
-        puts('Warning: ' + s)
+        puts("Warning: #{s}".yellow())
     end
 
     def error(s)
-        puts('Error: ' + s)
+        puts("Error: #{s}".red())
     end
 
     def time(s, t_time)
-        puts("#{s} at #{t_time}.") unless (@quiet)
+        puts("#{s} at #{t_time}.".purple()) unless (@quiet)
     end
     
     def duration(s, t_start, t_end)
@@ -167,7 +169,7 @@ class Report
 
         d_s = sprintf('%02d:%02d:%02d.%02d', hours, minutes, seconds, fraction)
 
-        puts("#{s} at #{t_end}. Duration was #{d_s} .") unless (@quiet)
+        puts("#{s} at #{t_end}. Duration was #{d_s} .".purple()) unless (@quiet)
     end
 end
 
@@ -181,17 +183,17 @@ class DbWrapper
     end
 
     def execute(sql)
-        puts('-> ' + sql)
+        puts("-> #{sql}".magenta())
         return @db.execute(sql)
     end
 
     def get_first_value(sql)
-        puts('-> ' + sql)
+        puts("-> #{sql}".magenta())
         return @db.get_first_value(sql)
     end
 
     def get_first_row(sql)
-        puts('-> ' + sql)
+        puts("-> #{sql}".magenta())
         return @db.get_first_row(sql)
     end
 
@@ -616,7 +618,7 @@ def tape_info(db, tapes)
     tapes = db.execute(query)
     tapes.collect!() do |tape|
         query = "SELECT files.size FROM links LEFT JOIN files ON links.file_number = files.number WHERE " +
-            " links.tape_number=#{tape[0]}"
+            "links.tape_number=#{tape[0]}"
         files = db.execute(query)
 
         size = 0
@@ -1271,6 +1273,9 @@ def tool_parse_command_line(exec, mods)
         options.on(nil, '--no-level', 'Instructs to not balance the files over the tapes.') do ||
             mods[:no_level] = true
         end
+        options.on(nil, '--sql', 'Instructs to show the SQL queries.') do ||
+            mods[:sql] = true
+        end
 
         options.separator('')
         options.separator('Actions:')
@@ -1448,7 +1453,7 @@ begin
     db_version = 2
     exec = {:mode => '', :action => '', :items => []}
     mods = {:verbose => false, :quiet => false, :relative => false, :duplicates => false, :sets => 1, :ffd => false, 
-        :name => '', :async => false, :device => '', :incremental => false, :no_level => false}
+        :name => '', :async => false, :device => '', :incremental => false, :no_level => false, :sql => false}
     db = nil
     
     # Parse and validate command line.
@@ -1461,8 +1466,11 @@ begin
         report.tool_init(version, db_version)
 
         # Initialize the database.
-        #db = db_init(report, version, db_version, mods[:async], DbWrapper.new())
-        db = db_init(report, version, db_version, mods[:async])
+        if (mods[:sql])
+            db = db_init(report, version, db_version, mods[:async], DbWrapper.new())
+        else
+            db = db_init(report, version, db_version, mods[:async])
+        end
 
         # Handle file mode.
         if (exec[:mode] == 'file')
