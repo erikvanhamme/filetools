@@ -153,7 +153,7 @@ class Report
     end
 
     def time(s, t_time)
-        puts("#{s} at #{t_time}.".purple()) unless (@quiet)
+        puts("#{s} at #{t_time}.".light_magenta()) unless (@quiet)
     end
     
     def duration(s, t_start, t_end)
@@ -169,7 +169,7 @@ class Report
 
         d_s = sprintf('%02d:%02d:%02d.%02d', hours, minutes, seconds, fraction)
 
-        puts("#{s} at #{t_end}. Duration was #{d_s} .".purple()) unless (@quiet)
+        puts("#{s} at #{t_end}. Duration was #{d_s} .".light_magenta()) unless (@quiet)
     end
 end
 
@@ -762,6 +762,16 @@ def tape_write(db, report, tapes, mods)
         t_start = Time.now()
         report.time("Start write of tape #{label} on #{mods[:device]}", t_start)
 
+        # Setup tape compression and block size.
+        output = `mt-st -f #{mods[:device]} compression 0`
+        unless (output == '')
+            report.error("mt-st error: #{output}")
+        end
+        output = `mt-st -f #{mods[:device]} setblk 4194304`
+        unless (output == '')
+            report.error("mt-st error: #{output}")
+        end
+
         # Write tape and rewind it if needed.
         output = `tar -H pax --xattrs -b 8192 -cf #{mods[:device]} -T manifest.txt`
         unless (output == '')
@@ -1205,8 +1215,13 @@ def tar_verify(report, filename, blocking_factor)
             end
         end
 
-        report.info("Tar verified. Files: #{verified}, Correct: #{verified - incorrect - unknown}, Incorrect:" + 
-            " #{incorrect}, Unknown: #{unknown}")
+        if (incorrect == 0)
+            report.info("Tar verified. Files: #{verified}, Correct: #{verified - incorrect - unknown}, Incorrect:" + 
+                " #{incorrect}, Unknown: #{unknown}")
+        else
+            report.error("Tar verified. Files: #{verified}, Correct: #{verified - incorrect - unknown}, Incorrect:" + 
+                " #{incorrect}, Unknown: #{unknown}")
+        end
     rescue IOError => e
         report.error(e.to_s())
     ensure
