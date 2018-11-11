@@ -602,7 +602,7 @@ def tape_list(db, tapes_fuzzy)
     tp(tapes, :label)
 end
 
-def tape_info(db, tapes)
+def tape_info(db, tapes, mods)
     query = 'SELECT DISTINCT tapes.number, tapes.label, tapes.size, tapes.tapeset_idx, tapesets.name, tapes.written,' +
         ' tapes.verified FROM tapes LEFT JOIN links ON links.tape_number=tapes.number LEFT JOIN tapesets ON' +
         ' tapesets.number=links.tapeset_number'
@@ -650,7 +650,11 @@ def tape_info(db, tapes)
             :capacity => tape[2], :usage => "#{used.round(1)} %", :ts_idx => tape[3], :tapeset => tape[4], 
             :written => w, :verified => v}
     end
-    tp(tapes, :label, :files, :size, :tar_size, :overhead, :capacity, :usage, :ts_idx, :tapeset, :written, :verified)
+    if (mods[:verbose])
+        tp(tapes, :label, :files, :size, :tar_size, :overhead, :capacity, :usage, :ts_idx, :tapeset, :written, :verified)
+    else
+        tp(tapes, :label, :files, :usage, :tapeset, :written, :verified)
+    end
 end
 
 def tape_manifest(db, report, tapes, mods)
@@ -763,29 +767,47 @@ def tape_write(db, report, tapes, mods)
         report.time("Start write of tape #{label} on #{mods[:device]}", t_start)
 
         # Setup tape compression and block size.
+        report.msg('Disabling compression.')
         output = `mt-st -f #{mods[:device]} compression 0`
         unless (output == '')
             report.error("mt-st error: #{output}")
+            return
         end
+        report.msg('Setting block size.')
         output = `mt-st -f #{mods[:device]} setblk 4194304`
         unless (output == '')
             report.error("mt-st error: #{output}")
+            return
         end
 
-        # Write tape and rewind it if needed.
+        # Write tape.
         output = `tar -H pax --xattrs -b 8192 -cf #{mods[:device]} -T manifest.txt`
-        unless (output == '')
+        if (output == '')
+            tape_written(db, report, tapes)
+        else
             report.error("Tar error: #{output}")
+            return
         end
-        unless (mods[:no_rewind])
-            output = `mt-st -f #{mods[:device]} rewoffl`
+
+        # Rewind tape if needed.
+        if (mods[:rewind])
+            report.msg('Rewinding tape.')
+            output = `mt-st -f #{mods[:device]} rewind`
             unless (output == '')
                 report.error("Mt-st error: #{output}")
+                return
             end
         end
 
-        # Mark tape as written.
-        tape_written(db, report, tapes)
+        # Offline tape if needed.
+        if (mods[:offline])
+            report.msg('Offlining tape.')
+            output = `mt-st -f #{mods[:device]} offline`
+            unless (output == '')
+                report.error("Mt-st error: #{output}")
+                return
+            end
+        end
 
         # Set end time and report.
         t_end = Time.now()
@@ -802,6 +824,26 @@ def tape_verify(db, report, tapes, mods)
 
         if (ok)
             tape_verified(db, report, tapes)
+        end
+
+        # Rewind tape if needed.
+        if (mods[:rewind])
+            report.msg('Rewinding tape.')
+            output = `mt-st -f #{mods[:device]} rewind`
+            unless (output == '')
+                report.error("Mt-st error: #{output}")
+                return
+            end
+        end
+
+        # Offline tape if needed.
+        if (mods[:offline])
+            report.msg('Offlining tape.')
+            output = `mt-st -f #{mods[:device]} offline`
+            unless (output == '')
+                report.error("Mt-st error: #{output}")
+                return
+            end
         end
 
         t_end = Time.now()
@@ -953,7 +995,7 @@ def tapeset_add(db, report, paths, mods)
 
     # 6. List info about new used tapes.
     report.msg('Tapeset(s) created:')
-    tape_info(db, tapes_used) unless (mods[:quiet])
+    tape_info(db, tapes_used, mods) unless (mods[:quiet])
 end
 
 def tapeset_update(db, report, old_name, new_name)
@@ -1282,8 +1324,11 @@ def tool_parse_command_line(exec, mods)
         options.on('-I', '--incremental', 'Selects incremental tapeset mode.') do ||
             mods[:incremental] = true
         end
-        options.on('-N', '--no-rewind-offline', 'Instructs to not rewind & eject the tape.') do ||
-            mods[:no_rewind] = true
+        options.on(nil, '--rewind', 'Instructs to rewind the tape after write or verify.') do ||
+            mods[:rewind] = true
+        end
+        options.on(nil, '--offline', 'Instructs to offline (eject) the tape afyer write or verify.') do ||
+            mods[:offline] = true
         end
         options.on(nil, '--no-level', 'Instructs to not balance the files over the tapes.') do ||
             mods[:no_level] = true
@@ -1468,7 +1513,8 @@ begin
     db_version = 2
     exec = {:mode => '', :action => '', :items => []}
     mods = {:verbose => false, :quiet => false, :relative => false, :duplicates => false, :sets => 1, :ffd => false, 
-        :name => '', :async => false, :device => '', :incremental => false, :no_level => false, :sql => false}
+        :name => '', :async => false, :device => '', :incremental => false, :no_level => false, :sql => false,
+        :rewind => false, :offline => false}
     db = nil
     
     # Parse and validate command line.
@@ -1535,7 +1581,7 @@ begin
             when 'list'
                 tape_list(db, exec[:items])
             when 'info'
-                tape_info(db, exec[:items])
+                tape_info(db, exec[:items], mods)
             when 'manifest'
                 tape_manifest(db, report, exec[:items], mods)
             when 'write'
