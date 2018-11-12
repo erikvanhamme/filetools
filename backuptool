@@ -745,6 +745,7 @@ def tape_write(db, report, tapes, mods)
             end
         rescue IOError => e
             puts(e)
+            return false
         ensure
             checksums_file.close() unless checksums_file.nil?
             manifest_file.close() unless manifest_file.nil?
@@ -767,18 +768,8 @@ def tape_write(db, report, tapes, mods)
         report.time("Start write of tape #{label} on #{mods[:device]}", t_start)
 
         # Setup tape compression and block size.
-        report.msg('Disabling compression.')
-        output = `mt-st -f #{mods[:device]} compression 0`
-        unless (output == '')
-            report.error("mt-st error: #{output}")
-            return
-        end
-        report.msg('Setting block size.')
-        output = `mt-st -f #{mods[:device]} setblk 4194304`
-        unless (output == '')
-            report.error("mt-st error: #{output}")
-            return
-        end
+        return false unless (tape_disable_compression(report, mods[:device]))
+        return false unless (tape_set_block_size(report, mods[:device], 4194304))
 
         # Write tape.
         output = `tar -H pax --xattrs -b 8192 -cf #{mods[:device]} -T manifest.txt`
@@ -786,33 +777,18 @@ def tape_write(db, report, tapes, mods)
             tape_written(db, report, tapes)
         else
             report.error("Tar error: #{output}")
-            return
+            return false
         end
 
-        # Rewind tape if needed.
-        if (mods[:rewind])
-            report.msg('Rewinding tape.')
-            output = `mt-st -f #{mods[:device]} rewind`
-            unless (output == '')
-                report.error("Mt-st error: #{output}")
-                return
-            end
-        end
-
-        # Offline tape if needed.
-        if (mods[:offline])
-            report.msg('Offlining tape.')
-            output = `mt-st -f #{mods[:device]} offline`
-            unless (output == '')
-                report.error("Mt-st error: #{output}")
-                return
-            end
-        end
+        # Rewind and offline tape if needed.
+        return false if (mods[:rewind] && (tape_rewind(report, mods[:device]) == false))
+        return false if (mods[:offline] && (tape_offline(report, mods[:device]) == false))
 
         # Set end time and report.
         t_end = Time.now()
         report.duration("Finished writing tape ", t_start, t_end)
     end
+    return true
 end
 
 def tape_verify(db, report, tapes, mods)
@@ -820,35 +796,63 @@ def tape_verify(db, report, tapes, mods)
         t_start = Time.now()
         report.time("Start verify of tape #{label} on #{mods[:device]}", t_start)
 
+        # Set block size for optimal reading.
+        return false unless (tape_set_block_size(report, mods[:device], 4194304))
+
         ok = tar_verify(report, mods[:device], 8192)
 
         if (ok)
             tape_verified(db, report, tapes)
         end
 
-        # Rewind tape if needed.
-        if (mods[:rewind])
-            report.msg('Rewinding tape.')
-            output = `mt-st -f #{mods[:device]} rewind`
-            unless (output == '')
-                report.error("Mt-st error: #{output}")
-                return
-            end
-        end
-
-        # Offline tape if needed.
-        if (mods[:offline])
-            report.msg('Offlining tape.')
-            output = `mt-st -f #{mods[:device]} offline`
-            unless (output == '')
-                report.error("Mt-st error: #{output}")
-                return
-            end
-        end
+        # Rewind and offline tape if needed.
+        return false if (mods[:rewind] && (tape_rewind(report, mods[:device]) == false))
+        return false if (mods[:offline] && (tape_offline(report, mods[:device]) == false))
 
         t_end = Time.now()
         report.duration("Done verifying with result ok=#{ok}", t_start, t_end)
     end
+    return true
+end
+
+def tape_disable_compression(report, device)
+    report.msg('Disabling compression.')
+    output = `mt-st -f #{device} compression 0`
+    unless (output == '')
+        report.error("mt-st error: #{output}")
+        return false
+    end
+    return true
+end
+
+def tape_set_block_size(report, device, block_size)
+    report.msg('Setting block size.')
+    output = `mt-st -f #{device} setblk #{block_size}`
+    unless (output == '')
+        report.error("mt-st error: #{output}")
+        return false
+    end
+    return true
+end
+
+def tape_rewind(report, device)
+    report.msg('Rewinding tape.')
+    output = `mt-st -f #{device} rewind`
+    unless (output == '')
+        report.error("Mt-st error: #{output}")
+        return false
+    end
+    return true
+end
+
+def tape_offline(report, device)
+    report.msg('Offlining tape.')
+    output = `mt-st -f #{device} offline`
+    unless (output == '')
+        report.error("Mt-st error: #{output}")
+        return false
+    end
+    return true
 end
 
 #-----------------------------------------------------------------------------------------------------------------------
