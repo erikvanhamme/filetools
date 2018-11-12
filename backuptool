@@ -82,7 +82,7 @@ class Report
     end
 
     def file_duplicate(db_absolute_path, match_absolute_path)
-        msg("Duplicate file: master=#{db_absolute_path} duplicate=#{match_absolute_path}")
+        info("Duplicate file: master=#{db_absolute_path} duplicate=#{match_absolute_path}")
     end
 
     def tape_added(label)
@@ -137,7 +137,7 @@ class Report
     end
 
     def msg(s)
-        puts(s) unless (@quiet)
+        puts(s) if (@verbose)
     end
 
     def info(s)
@@ -994,7 +994,7 @@ def tapeset_add(db, report, paths, mods)
     end
 
     # 6. List info about new used tapes.
-    report.msg('Tapeset(s) created:')
+    report.info('Tapeset(s) created:')
     tape_info(db, tapes_used, mods) unless (mods[:quiet])
 end
 
