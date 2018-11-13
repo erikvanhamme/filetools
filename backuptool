@@ -28,9 +28,9 @@ require 'table_print'
 # Class definitions
 
 class Report
-    def initialize(mods)
-        @verbose = mods[:verbose]
-        @quiet = mods[:quiet]
+    def initialize(verbose, quiet)
+        @verbose = verbose
+        @quiet = quiet
         @r = { :f_add => 0, :f_up => 0, :f_rm => 0, :t_add => 0, :t_up => 0, :t_rm => 0, :s_add => 0, :s_up => 0, 
             :s_rm => 0, :l_add => 0, :l_rm => 0 }
     end
@@ -1514,7 +1514,7 @@ begin
     
     # Parse and validate command line.
     tool_parse_command_line(exec, mods)
-    report = Report.new(mods)
+    report = Report.new(verbose, quiet)
 
     # Run tool if no error.
     if (tool_validate_command_line(exec, mods, report))
