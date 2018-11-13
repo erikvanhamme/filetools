@@ -764,7 +764,7 @@ def tape_write(db, report, label, device, rewind, offline)
 
     # Set start time.
     t_start = Time.now()
-    report.time("Start write of tape #{label} on #{mods[:device]}", t_start)
+    report.time("Start write of tape #{label} on #{device}", t_start)
 
     # Setup tape compression and block size.
     return false unless (tape_disable_compression(report, device))
