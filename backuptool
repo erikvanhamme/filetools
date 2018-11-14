@@ -21,6 +21,7 @@ require 'fileutils'
 require 'find'
 require 'optparse'
 require 'pathname'
+require 'ruby-progressbar'
 require 'sqlite3'
 require 'table_print'
 
@@ -602,6 +603,35 @@ def tape_list(db, tapes_fuzzy)
     tp(tapes, :label)
 end
 
+def tar_sizes(db, tape_number)
+    query = "SELECT files.size FROM links LEFT JOIN files ON links.file_number = files.number WHERE " +
+        "links.tape_number=#{tape_number}"
+    files = db.execute(query)
+
+    size = 0
+    overhead = 0
+    files.each() do |file|
+        size += file[0]
+        overhead += (512 * 3) + (512 - (file[0] % 512))
+    end
+    tar_size_no_footer = size + overhead
+    modulo = tar_size_no_footer % (8192 * 512)
+    if (modulo < 1024)
+        tar_footer_size = (8192 * 512) + modulo
+    else
+        tar_footer_size = (8192 * 512) - modulo
+    end
+    tar_size = tar_size_no_footer + tar_footer_size
+    overhead += tar_footer_size
+
+    if (files.length() == 0)
+        tar_size = 0
+        overhead = 0
+    end
+
+    return files.length(), size, tar_size, overhead
+end
+
 def tape_info(db, tapes, mods)
     query = 'SELECT DISTINCT tapes.number, tapes.label, tapes.size, tapes.tapeset_idx, tapesets.name, tapes.written,' +
         ' tapes.verified FROM tapes LEFT JOIN links ON links.tape_number=tapes.number LEFT JOIN tapesets ON' +
@@ -617,36 +647,14 @@ def tape_info(db, tapes, mods)
 
     tapes = db.execute(query)
     tapes.collect!() do |tape|
-        query = "SELECT files.size FROM links LEFT JOIN files ON links.file_number = files.number WHERE " +
-            "links.tape_number=#{tape[0]}"
-        files = db.execute(query)
+        files, size, tar_size, overhead = tar_sizes(db, tape[0])
 
-        size = 0
-        overhead = 0
-        files.each() do |file|
-            size += file[0]
-            overhead += (512 * 3) + (512 - (file[0] % 512))
-        end
-        tar_size_no_footer = size + overhead
-        modulo = tar_size_no_footer % (8192 * 512)
-        if (modulo < 1024)
-            tar_footer_size = (8192 * 512) + modulo
-        else
-            tar_footer_size = (8192 * 512) - modulo
-        end
-        tar_size = tar_size_no_footer + tar_footer_size
         used = (tar_size.to_f() / (tape[2].to_f() * 0.99)) * 100
-        overhead += tar_footer_size
-
-        if (files.length() == 0)
-            tar_size = 0
-            overhead = 0
-        end
 
         w = tape[5].nil? ? nil : Time.at(tape[5])
         v = tape[6].nil? ? nil : Time.at(tape[6])
 
-        {:label => tape[1], :files => files.length(), :size => size, :tar_size => tar_size, :overhead => overhead,
+        {:label => tape[1], :files => files, :size => size, :tar_size => tar_size, :overhead => overhead,
             :capacity => tape[2], :usage => "#{used.round(1)} %", :ts_idx => tape[3], :tapeset => tape[4], 
             :written => w, :verified => v}
     end
@@ -789,13 +797,16 @@ def tape_write(db, report, label, device, rewind, offline)
     return true
 end
 
-def tape_verify(db, report, label, device, rewind, offline)
+def tape_verify(db, report, label, device, rewind, offline, quiet)
     t_start = Time.now()
     report.time("Start verify of tape #{label} on #{device}", t_start)
 
+    tape_number = db.get_first_value("SELECT number FROM tapes WHERE label=\"#{label}\"")
+    files, size, tar_size, overhead = tar_sizes(db, tape_number)
+
     return false unless (tape_set_block_size(report, device, 4194304))
 
-    ok = tar_verify(report, device, 8192)
+    ok = tar_verify(report, device, 8192, tar_size, quiet)
     tape_mark_verified(db, report, [label]) if (ok)
 
     return false if (rewind && (tape_rewind(report, device) == false))
@@ -1123,16 +1134,23 @@ def tar_block_header_parse(block)
     }
 end
 
-def tar_verify(report, filename, blocking_factor)
+def tar_verify(report, filename, blocking_factor, tar_size, quiet)
     verified = 0
     incorrect = 0
     unknown = 0
+    errored = false
+    infos = []
+    errors = []
 
     unless (File.readable?(filename))
         report.error("Can not read file: #{filename}")
         return false
     end
     begin
+        unless (quiet)
+            pb = ProgressBar.create(:total => tar_size, :format => "%t: |\e[0;32m%b%i\e[0m| %e")
+        end
+
         file = File.open(filename, 'rb')
 
         state = :scan
@@ -1147,6 +1165,14 @@ def tar_verify(report, filename, blocking_factor)
         while (true)
             data_block = file.read(blocking_factor * 512)
             break if (data_block.nil?)
+
+            unless (quiet)
+                if ((incorrect != 0) && (errored == false))
+                    errored = true
+                    pb.format = "%t: |\e[0;31m%b%i\e[0m| %e"
+                end
+                pb.progress += data_block.length()
+            end
 
             case data_block.length()
             when (blocking_factor * 512)
@@ -1174,12 +1200,12 @@ def tar_verify(report, filename, blocking_factor)
                                 if (header[:size] == 0)
                                     calc_sha1 = digest.hexdigest()
                                     if (sha1.nil?())
-                                        report.info("#{calc_sha1}  #{header[:name]}")
+                                        infos << "#{calc_sha1}  #{header[:name]}"
                                         unknown += 1
                                     else
                                         unless (sha1 == calc_sha1)
-                                            report.error("Checksum mismatch: #{calc_sha1} #{header[:name_prefix]}" +
-                                                "#{header[:name]}")
+                                            errors << "Checksum mismatch: #{calc_sha1} #{header[:name_prefix]}" +
+                                                "#{header[:name]}"
                                             incorrect += 1
                                         end
                                     end
@@ -1223,12 +1249,12 @@ def tar_verify(report, filename, blocking_factor)
                         if (processed >= header[:size])
                             calc_sha1 = digest.hexdigest()
                             if (sha1.nil?())
-                                report.info("#{calc_sha1}  #{header[:name]}")
+                                infos << "#{calc_sha1}  #{header[:name]}"
                                 unknown += 1
                             else
                                 unless (sha1 == calc_sha1)
-                                    report.error("Checksum mismatch: #{calc_sha1} #{header[:name_prefix]}" +
-                                        "#{header[:name]}")
+                                    errors << "Checksum mismatch: #{calc_sha1} #{header[:name_prefix]}" +
+                                        "#{header[:name]}"
                                     incorrect += 1
                                 end
                             end
@@ -1247,9 +1273,16 @@ def tar_verify(report, filename, blocking_factor)
                 break
             else
                 # Cut off tar.
-                report.error('Truncated tar.')
+                errors << 'Truncated tar.'
                 break
             end
+        end
+
+        errors.each() do |err|
+            report.error(err)
+        end
+        infos.each() do |i|
+            report.info(i)
         end
 
         if (incorrect == 0)
@@ -1514,7 +1547,7 @@ begin
     
     # Parse and validate command line.
     tool_parse_command_line(exec, mods)
-    report = Report.new(verbose, quiet)
+    report = Report.new(mods[:verbose], mods[:quiet])
 
     # Run tool if no error.
     if (tool_validate_command_line(exec, mods, report))
@@ -1582,7 +1615,7 @@ begin
             when 'write'
                 tape_write(db, report, exec[:items][0], mods[:device], mods[:rewind], mods[:offline])
             when 'verify'
-                tape_verify(db, report, exec[:items][0], mods[:device], mods[:rewind], mods[:offline])
+                tape_verify(db, report, exec[:items][0], mods[:device], mods[:rewind], mods[:offline], mods[:quiet])
             when 'written'
                 tape_mark_written(db, report, exec[:items])
             when 'verified'
