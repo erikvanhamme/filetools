@@ -874,6 +874,16 @@ def tape_offline(report, device)
     return true
 end
 
+def tape_erase(report, device)
+    report.msg('Erasing tape.')
+    output = `mt-st -f #{device} erase`
+    unless (output == '')
+        report.error("Mt-st error: #{output}")
+        return false
+    end
+    return true
+end
+
 #-----------------------------------------------------------------------------------------------------------------------
 # Tapeset method section
 
@@ -1619,6 +1629,9 @@ def tool_parse_command_line(exec, mods)
         options.on('-V', '--verify', 'Verifies the tape.') do ||
             exec[:action] = 'verify'
         end
+        options.on('-e', '--erase', 'Erases the tape.') do ||
+            exec[:action] = 'erase'
+        end
         options.on(nil, '--mark-written', 'Marks the tapes as written.') do ||
             exec[:action] = 'written'
         end
@@ -1673,7 +1686,7 @@ def tool_validate_command_line(exec, mods, report)
     end
 
     # Check action.
-    legal = %w[add update remove list info manifest prune check written verified erased write verify]
+    legal = %w[add update remove list info manifest prune check written verified erased write verify erase]
     unless (legal.include?(exec[:action]))
         report.error("Unsupported action #{exec[:action]} specified.")
         return false
@@ -1683,7 +1696,7 @@ def tool_validate_command_line(exec, mods, report)
     min = ((exec[:action] == 'list') || (exec[:action] == 'info')) ? 0 : 1
     max = ((exec[:action] == 'update') && ((exec[:mode] == 'tape') || (exec[:mode] == 'tapeset'))) ? 1 : -1
     case exec[:action]
-    when 'write', 'verify'
+    when 'write', 'verify', 'erase'
         max = 1
     end
     if (exec[:items].length() < min)
@@ -1729,7 +1742,7 @@ def tool_validate_command_line(exec, mods, report)
     end
 
     # Check if device is set properly when in tape mode and scripts is selected.
-    actions = %w[write verify]
+    actions = %w[write verify erase]
     if ((exec[:mode] == 'tape') && (actions.include?(exec[:action])))
         if (mods[:device].empty?())
             report.error('No tape streamer device specified.')
@@ -1836,6 +1849,9 @@ begin
                 tape_write(db, report, exec[:items][0], mods[:device], mods[:rewind], mods[:offline], mods[:quiet])
             when 'verify'
                 tape_verify(db, report, exec[:items][0], mods[:device], mods[:rewind], mods[:offline], mods[:quiet])
+            when 'erase'
+                tape_erase(report, mods[:device])
+                tape_mark_erased(db, report, exec[:items])
             when 'written'
                 tape_mark_written(db, report, exec[:items])
             when 'verified'
