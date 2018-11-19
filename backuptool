@@ -14,9 +14,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-require 'colorize'
+require 'colorize' # TODO: Delete me.
 require 'digest/sha1'
-require 'ffi-xattr'
+require 'ffi-xattr' # TODO: Delete me.
 require 'fileutils'
 require 'find'
 require 'optparse'
@@ -36,24 +36,24 @@ class Report
             :s_rm => 0, :l_add => 0, :l_rm => 0 }
     end
 
-    def tool_init(version, db_version)
+    def tool_init(version, db_version) # TODO: Delete me.
         puts("Backuptool (version: #{version}, db_version: #{db_version})".cyan()) unless (@quiet)
     end
 
-    def db_create()
+    def db_create() # TODO: Delete me.
         warning('New database created.') unless (@quiet)
     end
 
-    def db_increment(from)
+    def db_increment(from) # TODO: Delete me.
         warning("Database schema update from #{from} to #{from + 1}.")
     end
 
-    def db_incompatible(version_expected, version, db_version_expected, db_version)
+    def db_incompatible(version_expected, version, db_version_expected, db_version) # TODO: Delete me.
         error("Incompatible versions. (db_v: #{version} > exp_db_v: #{version_expected}) || " +
                 "(schema_db_v: #{db_version} > exp_schema_db_v: #{db_version_expected})")
     end
 
-    def db_async()
+    def db_async() # TODO: Delete me.
         warning('Database in asynchronous mode.') unless (@quiet)
     end
 
@@ -63,7 +63,7 @@ class Report
         tp(data, data[0].keys) if (@verbose)
     end
 
-    def db_exception(exception)
+    def db_exception(exception) # TODO: Delete me.
         error('SQL exception: ' + exception.to_s())
     end
 
@@ -82,7 +82,7 @@ class Report
         puts("File #{absolute_path} was removed.".blue()) if (@verbose)
     end
 
-    def file_duplicate(db_absolute_path, match_absolute_path)
+    def file_duplicate(db_absolute_path, match_absolute_path) # TODO: Delete me.
         info("Duplicate file: master=#{db_absolute_path} duplicate=#{match_absolute_path}")
     end
 
@@ -278,7 +278,7 @@ def db_increment_schema(db, current, report)
 
         # Drop the unused tables.
         db.execute('DROP TABLE file_tape_links')
-        db.execute('DROP TABLE tapes_v1')        
+        db.execute('DROP TABLE tapes_v1')
     end
     if (current == 2)
         # TODO: Handle schema update from V2 to V3 here.
