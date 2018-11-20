@@ -19,11 +19,11 @@ require 'digest/sha1'
 require 'ffi-xattr' # TODO: Delete me.
 require 'fileutils'
 require 'find'
-require 'optparse'
+require 'optparse' # TODO: Delete me
 require 'pathname'
-require 'ruby-progressbar'
+require 'ruby-progressbar' # TODO: Delete me.
 require 'sqlite3'
-require 'table_print'
+require 'table_print' # TODO: Delete me.
 
 #-----------------------------------------------------------------------------------------------------------------------
 # Class definitions

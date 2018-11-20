@@ -55,6 +55,7 @@ def tool_build_actions()
     a << Arg.new('--verify'         , nil , 2,  2, [:label, :device], 'Verifies the tape on the device.')
     a << Arg.new('--write-verify'   , nil , 2,  2, [:label, :device], 'Writes and verifies the tape on the device.')
     a << Arg.new('--replace'        , nil , 2,  2, [:label, :label] , 'Replaces the tape in the database.')
+    a << Arg.new('--stage'          , nil , 2,  2, [:label, :path]  , 'Writes the tape to an on-disk tar file.')
 
     a << Arg.new('--add-tapeset'    , nil , 2, -1, [:name, :path]   , 'Adds a tapeset to the database.')
     a << Arg.new('--remove-tapesets', nil , 1, -1, [:name]          , 'Removes tapesets from the database.')
@@ -96,7 +97,7 @@ def tool_usage(actions, modifiers)
     puts('======================')
 
     map = []
-    map << ['Actions:', [['Misc:', 1], ['Paths:', 5], ['Tapes:', 13], ['Tapesets:', 5]]]
+    map << ['Actions:', [['Misc:', 1], ['Paths:', 5], ['Tapes:', 14], ['Tapesets:', 5]]]
     map << ['Modifiers:', [['Misc:', 4], ['Tapes:', 2], ['Tapesets:', 5]]]
 
     all = []
@@ -346,6 +347,8 @@ def tool_main()
         tape_verify(report, rewind, offline, args[0], args[1]) # TODO: Warning: Changed signature.
     when '--replace'
         tape_update(db, report, args[0], args[1]) # TODO: Change name to tape_replace.
+    when '--stage'
+        tape_write(report, false, false, args[0], args[1]) # TODO: Warning: Changed signature.
 
     when '--add-tapeset'
         tapeset_add(db, report, double, triple, incremental, ffd, no_tape_level, args) # Warning: Changed signature.
