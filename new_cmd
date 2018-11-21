@@ -1,7 +1,9 @@
 #!/usr/bin/ruby
 
-# ANSI escape color codes.
-module CC
+#-----------------------------------------------------------------------------------------------------------------------
+# Class definitions
+
+module CC # COMMON
     BLACK = 30
     RED = 31
     GREEN = 32
@@ -21,7 +23,7 @@ module CC
 end
 
 class String
-    def color(fg, bg = nil)
+    def color(fg, bg = nil) # COMMON
         if (bg.nil?())
             return "\e[#{fg}m#{self}\e[0m"
         else
@@ -29,7 +31,7 @@ class String
         end
     end
 
-    def to_ws(width)
+    def to_ws(width) # COMMON
         l = length()
         if (l < width)
             # Grow.
@@ -48,7 +50,7 @@ class String
 end
 
 class Array
-    def keys()
+    def keys() # COMMON
         k = []
         for i in 0..(length() - 1)
             k << i
@@ -57,7 +59,7 @@ class Array
     end
 end
 
-class Arg
+class Arg # COMMON
     attr_accessor :long, :short, :min_args, :max_args, :args_type, :help
 
     def initialize(long, short, min_args, max_args, args_type, help)
@@ -68,6 +70,267 @@ class Arg
         @args_type = args_type
         @help = help
     end
+end
+
+class ReportBase # COMMON
+    def configure(verbose, quiet)
+        @verbose = verbose
+        @quiet = quiet
+    end
+
+    def msg(s)
+        puts(s) if (@verbose)
+    end
+
+    def always(s)
+        puts(s)
+    end
+
+    def info(s)
+        puts(s.color(CC::GREEN)) unless (@quiet)
+    end
+
+    def warning(s)
+        puts("Warning: #{s}".color(CC::YELLOW()))
+    end
+
+    def error(s)
+        puts("Error: #{s}".color(CC::RED))
+    end
+
+    def time(s, t_time)
+        puts("#{s} at #{t_time}.".color(CC::BRIGHT_MAGENTA)) unless (@quiet)
+    end
+
+    def duration(s, t_start, t_end)
+        d = t_end - t_start
+        fraction = d % 1
+        d -= fraction
+        fraction = (fraction * 100).round(0)
+        seconds = d % 60
+        d = (d - seconds) / 60
+        minutes = d % 60
+        d = (d - minutes) / 60
+        hours = d % 60
+
+        d_s = sprintf('%02d:%02d:%02d.%02d', hours, minutes, seconds, fraction)
+
+        puts("#{s} at #{t_end}. Duration was #{d_s} .".color(CC::BRIGHT_MAGENTA)) unless (@quiet)
+    end
+
+    def table(data, columns = nil, widths = nil, hide_table = false)
+        # Assemble the columns from the data unless given.
+        if (columns.nil?())
+            columns = []
+            data.each() do |row|
+                columns << row.keys()
+            end
+            columns.flatten!().uniq!()
+        end
+
+        # Calculate the wanted column lengths from the data.
+        lengths = Array.new(columns.length(), 0)
+        strings = []
+        col_idx = 0
+        columns.each() do |col|
+            l = col.to_s().length()
+            if (lengths[col_idx] < l)
+                lengths[col_idx] = l
+            end
+            col_idx += 1
+        end
+        data.each() do |row|
+            col_idx = 0
+            columns.each() do |col|
+                s = row[col].to_s()
+                l = s.length()
+
+                if (lengths[col_idx] < l)
+                    lengths[col_idx] = l
+                end
+
+                strings << s
+
+                col_idx += 1
+            end
+        end
+
+        # Deal with maximum widths if provided.
+        unless (widths.nil?())
+            col_idx = 0
+            columns.each() do |col|
+                unless (widths[col].nil?())
+                    lengths[col_idx] = widths[col]
+                end
+                col_idx += 1
+            end
+        end
+
+        # Print the table header.
+        unless (hide_table)
+            header = ''
+            line = ''
+            col_idx = 0
+            columns.each() do |col|
+                header += col.to_s().upcase().to_ws(lengths[col_idx]) + ' | '
+                line += ('-' * lengths[col_idx]) + '-+-'
+                col_idx += 1
+            end
+            header.chomp!(' | ')
+            line.chomp!('-+-')
+            puts header
+            puts line
+        end
+
+        # Print the table data.
+        separator = hide_table ? '' : ' | '
+        idx = 0
+        data.length().times() do ||
+            row_string = ''
+            col_idx = 0
+            columns.length().times() do ||
+                row_string += strings[idx].to_ws(lengths[col_idx]) + separator
+                col_idx += 1
+                idx += 1
+            end
+            row_string.chomp!(separator)
+            puts row_string
+        end
+    end
+end
+
+class DbWrapper # COMMON
+    def initialize()
+        @db = nil
+    end
+
+    def wrap(db)
+        @db = db
+    end
+
+    def execute(sql)
+        puts("-> #{sql}".color(CC::MAGENTA))
+        return @db.execute(sql)
+    end
+
+    def get_first_value(sql)
+        puts("-> #{sql}".color(CC::MAGENTA))
+        return @db.get_first_value(sql)
+    end
+
+    def get_first_row(sql)
+        puts("-> #{sql}".color(CC::MAGENTA))
+        return @db.get_first_row(sql)
+    end
+
+    def changes()
+        return @db.changes()
+    end
+
+    def close()
+        @db.close()
+    end
+end
+
+#-----------------------------------------------------------------------------------------------------------------------
+# Tool method section
+
+def tool_find_arg_short(args, short) # COMMON
+    args.each() do |arg|
+        return arg if (arg.short() == short)
+    end unless (args.nil?())
+    return nil
+end
+
+def tool_find_arg_long(args, long) # COMMON
+    args.each() do |arg|
+        return arg if (arg.long() == long)
+    end unless (args.nil?())
+    return nil
+end
+
+def tool_usage_args(action) # COMMON
+    args = ''
+    unless (action.nil?())
+        action.args_type().each() do |arg|
+            args += "#{arg.upcase} "
+        end
+        args.chomp!(' ')
+        args += '...' if (action.max_args() == -1)
+        args = "<#{args}>" if ((action.min_args() == 0) && (action.max_args() != 0))
+    end
+    return args
+end
+
+def tool_show_usage(report, banner, actions, modifiers, map) # COMMON
+    report.always(banner)
+    report.always('=' * banner.length)
+
+    all = []
+    all << actions
+    all << modifiers
+    all.flatten!()
+
+    index = 0
+    map.each() do |submap|
+        report.always(submap[0])
+        report.always('-' * submap[0].length())
+        submap[1].each() do |subsubmap|
+            report.always(subsubmap[0])
+            subsubmap[1].times() do ||
+                action = all[index]
+                args = tool_usage_args(action)
+                short = action.short().nil?() ? '' : action.short()
+                long = "#{action.long()} #{args}"
+
+                short = short + (' ' * (10 - short.length()))
+                long = long + (' ' * (35 - long.length()))
+                report.always(short + long + action.help())
+
+                index += 1
+            end
+        end
+    end
+end
+
+def tool_parse_command_line(report, actions, modifiers) # COMMON
+    selected_actions = []
+    selected_modifiers = []
+
+    delete = []
+    ARGV.each() do |arg|
+        if (arg.match(/^\-[a-zA-Z0-9]{1}$/))
+            # Deal with short action or modifier.
+            action = tool_find_arg_short(actions, arg)
+            modifier = tool_find_arg_short(modifiers, arg)
+            if (action.nil?() && modifier.nil?())
+                report.error(arg)
+                return [], [], []
+            else
+                selected_actions << action unless (action.nil?())
+                selected_modifiers << modifier unless (modifier.nil?())
+                delete << arg
+            end
+        end
+        if (arg.match(/^\-\-[a-zA-Z0-9\-]{2,}$/))
+            # Deal with long action or modifier.
+            action = tool_find_arg_long(actions, arg)
+            modifier = tool_find_arg_long(modifiers, arg)
+            if (action.nil?() && modifier.nil?())
+                report.error(arg)
+                return [], [], []
+            else
+                selected_actions << action unless (action.nil?())
+                selected_modifiers << modifier unless (modifier.nil?())
+                delete << arg
+            end
+        end
+    end
+    delete.each() do |del|
+        ARGV.delete_at(ARGV.index(del))
+    end
+
+    return selected_actions, selected_modifiers, ARGV
 end
 
 def tool_build_modifiers()
@@ -120,152 +383,12 @@ def tool_build_actions()
     return a
 end
 
-def tool_find_arg_short(args, short)
-    args.each() do |arg|
-        return arg if (arg.short() == short)
-    end unless (args.nil?())
-    return nil
-end
-
-def tool_find_arg_long(args, long)
-    args.each() do |arg|
-        return arg if (arg.long() == long)
-    end unless (args.nil?())
-    return nil
-end
-
-def tool_usage_args(action)
-    args = ''
-    unless (action.nil?())
-        action.args_type().each() do |arg|
-            args += "#{arg.upcase} "
-        end
-        args.chomp!(' ')
-        args += '...' if (action.max_args() == -1)
-        args = "<#{args}>" if ((action.min_args() == 0) && (action.max_args() != 0))
-    end
-    return args
-end
-
-def tool_usage(actions, modifiers)
-    puts('backuptool usage help:')
-    puts('======================')
-
+def tool_usage(report, actions, modifiers)
     map = []
     map << ['Actions:', [['Misc:', 1], ['Paths:', 5], ['Tapes:', 13], ['Tapesets:', 5]]]
     map << ['Modifiers:', [['Misc:', 4], ['Tapes:', 2], ['Tapesets:', 5]]]
 
-    all = []
-    all << actions
-    all << modifiers
-    all.flatten!()
-
-    index = 0
-    map.each() do |submap|
-        puts(submap[0])
-        puts('-' * submap[0].length())
-        submap[1].each() do |subsubmap|
-            puts(subsubmap[0])
-            subsubmap[1].times() do ||
-                action = all[index]
-                args = tool_usage_args(action)
-                short = action.short().nil?() ? '' : action.short()
-                long = "#{action.long()} #{args}"
-
-                short = short + (' ' * (10 - short.length()))
-                long = long + (' ' * (35 - long.length()))
-                puts(short + long + action.help())
-
-                index += 1
-            end
-        end
-    end
-end
-
-def tool_parse_command_line(actions, modifiers)
-    selected_actions = []
-    selected_modifiers = []
-
-    delete = []
-    ARGV.each() do |arg|
-        if (arg.match(/^\-[a-zA-Z0-9]{1}$/))
-            # Deal with short action or modifier.
-            action = tool_find_arg_short(actions, arg)
-            modifier = tool_find_arg_short(modifiers, arg)
-            if (action.nil?() && modifier.nil?())
-                puts 'ERROR ' + arg
-                return [], [], []
-            else
-                selected_actions << action unless (action.nil?())
-                selected_modifiers << modifier unless (modifier.nil?())
-                delete << arg
-            end
-        end
-        if (arg.match(/^\-\-[a-zA-Z0-9\-]{2,}$/))
-            # Deal with long action or modifier.
-            action = tool_find_arg_long(actions, arg)
-            modifier = tool_find_arg_long(modifiers, arg)
-            if (action.nil?() && modifier.nil?())
-                puts 'ERROR ' + arg
-                return [], [], []
-            else
-                selected_actions << action unless (action.nil?())
-                selected_modifiers << modifier unless (modifier.nil?())
-                delete << arg
-            end
-        end
-    end
-    delete.each() do |del|
-        ARGV.delete_at(ARGV.index(del))
-    end
-    
-    return selected_actions, selected_modifiers, ARGV
-end
-
-def tool_validate_command_line(actions, modifiers, args)
-    if (actions.length() == 0)
-        puts 'ERROR no valid action(s) specified.'
-        return false
-    end
-    if (actions.length() > 1)
-        puts 'ERROR too many actions specified.'
-        return false
-    end
-
-    action = actions[0]
-    min_args = action.min_args()
-    max_args = action.max_args()
-
-    if (args.length() < min_args) 
-        puts 'ERROR not enough args.'
-        return false
-    end
-
-    if ((max_args != -1) && (args.length() != max_args))
-        puts 'ERROR incorrect number of args.'
-        return false
-    end
-
-    arg_index = 0
-    args.length().times() do ||
-        arg = args[arg_index]
-        types = action.args_type()
-        type = nil
-        if (arg_index >= types.length())
-            type = types.last()
-        else
-            type = types[arg_index]
-        end
-
-        unless (tool_validate_arg(arg, type))
-            puts 'ERROR invalid arg: ' + arg
-            return false
-        end
-
-        arg_index += 1
-    end
-
-    return true
+    tool_show_usage(report, 'backuptool usage help:', actions, modifiers, map)
 end
 
 def tool_validate_arg(arg, type)
@@ -342,109 +465,79 @@ def tool_split_modifiers(modifiers)
     return verbose, quiet, double, triple, incremental, ffd, async, rewind, offline, no_tape_level, sql
 end
 
-# TODO: Consider putting this in the report after merge with backuptool.
-def tool_table(data, columns = nil, widths = nil, hide_table = false)
-    # Assemble the columns from the data unless given.
-    if (columns.nil?())
-        columns = []
-        data.each() do |row|
-            columns << row.keys()
-        end
-        columns.flatten!().uniq!()
+def tool_validate_command_line(report, actions, args)
+    if (actions.length() == 0)
+        report.error('No valid action(s) specified.')
+        return false
+    end
+    if (actions.length() > 1)
+        report.error('Too many actions specified.')
+        return false
     end
 
-    # Calculate the wanted column lengths from the data.
-    lengths = Array.new(columns.length(), 0)
-    strings = []
-    col_idx = 0
-    columns.each() do |col|
-        l = col.to_s().length()
-        if (lengths[col_idx] < l)
-            lengths[col_idx] = l
-        end
-        col_idx += 1
-    end
-    data.each() do |row|
-        col_idx = 0
-        columns.each() do |col|
-            s = row[col].to_s()
-            l = s.length()
+    action = actions[0]
+    min_args = action.min_args()
+    max_args = action.max_args()
 
-            if (lengths[col_idx] < l)
-                lengths[col_idx] = l
-            end
-
-            strings << s
-
-            col_idx += 1
-        end
+    if (args.length() < min_args)
+        report.error('Not enough args.')
+        return false
     end
 
-    # Deal with maximum widths if provided.
-    unless (widths.nil?())
-        col_idx = 0
-        columns.each() do |col|
-            unless (widths[col].nil?())
-                lengths[col_idx] = widths[col]
-            end
-            col_idx += 1
-        end
+    if ((max_args != -1) && (args.length() != max_args))
+        report.error('Incorrect number of args.')
+        return false
     end
 
-    # Print the table header.
-    unless (hide_table)
-        header = ''
-        line = ''
-        col_idx = 0
-        columns.each() do |col|
-            header += col.to_s().upcase().to_ws(lengths[col_idx]) + ' | '
-            line += ('-' * lengths[col_idx]) + '-+-'
-            col_idx += 1
+    arg_index = 0
+    args.length().times() do ||
+        arg = args[arg_index]
+        types = action.args_type()
+        if (arg_index >= types.length())
+            type = types.last()
+        else
+            type = types[arg_index]
         end
-        header.chomp!(' | ')
-        line.chomp!('-+-')
-        puts header
-        puts line
+
+        unless (tool_validate_arg(arg, type))
+            report.error('Invalid arg: ' + arg)
+            return false
+        end
+
+        arg_index += 1
     end
 
-    # Print the table data.
-    separator = hide_table ? '' : ' | '
-    idx = 0
-    data.length().times() do ||
-        row_string = ''
-        col_idx = 0
-        columns.length().times() do ||
-            row_string += strings[idx].to_ws(lengths[col_idx]) + separator
-            col_idx += 1
-            idx += 1
-        end
-        row_string.chomp!(separator)
-        puts row_string
-    end
+    return true
 end
 
-def tool_main()
+#-----------------------------------------------------------------------------------------------------------------------
+# Main section
+
+begin
+    report = ReportBase.new()
+
     # Prepare for dealing with command line.
     possible_actions = tool_build_actions()
     possible_modifiers = tool_build_modifiers()
 
     # Process command line and check validity.
-    actions, modifiers, args = tool_parse_command_line(possible_actions, possible_modifiers)
+    actions, modifiers, args = tool_parse_command_line(report, possible_actions, possible_modifiers)
     args = tool_split_labels(args) unless (args.nil?())
-    exit(-1) unless (tool_validate_command_line(actions, modifiers, args))
+    exit(-1) unless (tool_validate_command_line(report, actions, args))
 
     verbose, quiet, double, triple, incremental, ffd, async, rewind, offline, no_tape_level, sql = \
         tool_split_modifiers(modifiers)
 
+    report.configure(verbose, quiet)
+
     db = nil
-    report = nil
 
     # Execute selected action.
     action = actions[0].long()
     case action
     when '--help'
-        tool_usage(possible_actions, possible_modifiers)
-    
+        tool_usage(report, possible_actions, possible_modifiers)
+
     when '--add-paths'
         path_add(db, report, args)
     when '--update'
@@ -455,7 +548,7 @@ def tool_main()
         path_prune(db, report, args)
     when '--check'
         path_check(db, report, args)
-    
+
     when '--add-tapes'
         tape_add(db, report, args)
     when '--remove-tapes'
@@ -494,10 +587,16 @@ def tool_main()
         tapeset_list(db, report, args)
     when '--info-tapesets'
         tapeset_info(db, report, args)
+    else
+        report.error('Bug in tool_validate_command_line, should never be able to enter here.')
     end
 
-    puts args.to_s().color(CC::BLUE)
-    puts [verbose, quiet, double, triple, incremental, ffd, async, rewind, offline, no_tape_level, sql].to_s().color(CC::GREEN)
-end
+    report.info(args.to_s().color(CC::BLUE))
+    report.info([verbose, quiet, double, triple, incremental, ffd, async, rewind, offline, no_tape_level, sql].to_s().color(CC::GREEN))
 
-tool_main()
+    report.table([[verbose, quiet, double, triple, incremental, ffd, async, rewind, offline, no_tape_level, sql]])
+rescue SQLite3::Exception => exception
+    report.db_exception(exception)
+ensure
+    db.close() if (db)
+end
