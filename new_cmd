@@ -722,7 +722,7 @@ def tape_erase(db, report, rewind, offline, label, device)
     return false if (offline && (not tape_offline(report, device)))
 end
 
-def tape_write(db, report, rewind, offline, label, device)
+def tape_write(db, report, rewind, offline, compression, label, device)
     # TODO: Implement me.
 end
 
@@ -730,7 +730,7 @@ def tape_verify(db, report, rewind, offline, label, device)
     # TODO: Implement me.
 end
 
-def tape_write_verify(db, report, rewind, offline, label, device)
+def tape_write_verify(db, report, rewind, offline, compression, label, device)
     # TODO: Implement me.
 end
 
@@ -905,6 +905,7 @@ def tool_build_modifiers()
 
     m << Arg.new('--rewind'       , nil , 0, 0, [], 'Rewinds tape after write or verify.')
     m << Arg.new('--offline'      , nil , 0, 0, [], 'Offlines (ejects) tape after write or verify.')
+    m << Arg.new('--compression'  , nil , 0, 0, [], 'Enables the tape drives hardware compression.')
 
     m << Arg.new('--double'       , '-2', 0, 0, [], 'Double redundancy for --add-tapeset.')
     m << Arg.new('--triple'       , '-3', 0, 0, [], 'Triple redundancy for --add-tapeset.')
@@ -937,6 +938,7 @@ def tool_build_actions()
     a << Arg.new('--verify'         , nil , 2,  2, [:label, :device], 'Verifies the tape on the device.')
     a << Arg.new('--write-verify'   , nil , 2,  2, [:label, :device], 'Writes and verifies the tape on the device.')
     a << Arg.new('--replace'        , nil , 2,  2, [:label, :label] , 'Replaces the tape in the database.')
+    a << Arg.new('--stage'          , nil , 2,  2, [:label, :path]  , 'Stages the tarball in the given path.')
 
     a << Arg.new('--add-tapeset'    , nil , 2, -1, [:name, :path]   , 'Adds a tapeset to the database.')
     a << Arg.new('--remove-tapesets', nil , 1, -1, [:name]          , 'Removes tapesets from the database.')
@@ -948,8 +950,8 @@ end
 
 def tool_usage(report, actions, modifiers)
     map = []
-    map << ['Actions:', [['Misc:', 1], ['Paths:', 5], ['Tapes:', 13], ['Tapesets:', 5]]]
-    map << ['Modifiers:', [['Misc:', 4], ['Tapes:', 2], ['Tapesets:', 5]]]
+    map << ['Actions:', [['Misc:', 1], ['Paths:', 5], ['Tapes:', 14], ['Tapesets:', 5]]]
+    map << ['Modifiers:', [['Misc:', 4], ['Tapes:', 3], ['Tapesets:', 5]]]
 
     tool_show_usage(report, 'Usage help:', actions, modifiers, map)
 end
@@ -995,6 +997,7 @@ def tool_split_modifiers(modifiers)
     offline = false
     no_tape_level = false
     sql = false
+    compression = false
 
     modifiers.each() do |modifier|
         case modifier.long()
@@ -1022,10 +1025,12 @@ def tool_split_modifiers(modifiers)
             no_tape_level = true
         when '--sql'
             sql = true
+        when '--compression'
+            compression = true
         end
     end
 
-    return verbose, quiet, double, triple, incremental, ffd, async, rewind, offline, no_tape_level, sql
+    return verbose, quiet, double, triple, incremental, ffd, async, rewind, offline, no_tape_level, sql, compression
 end
 
 def tool_validate_command_line(report, actions, args)
@@ -1092,7 +1097,7 @@ begin
     args = tool_split_labels(args) unless (args.nil?())
     exit(-1) unless (tool_validate_command_line(report, actions, args))
 
-    verbose, quiet, double, triple, incremental, ffd, async, rewind, offline, no_tape_level, sql = \
+    verbose, quiet, double, triple, incremental, ffd, async, rewind, offline, no_tape_level, sql, compression = \
         tool_split_modifiers(modifiers)
 
     report.configure(verbose, quiet)
@@ -1145,11 +1150,13 @@ begin
     when '--write'
         tape_write(db, report, rewind, offline, args[0], args[1])
     when '--verify'
-        tape_verify(db, report, rewind, offline, args[0], args[1])
+        tape_verify(db, report, rewind, offline, compression, args[0], args[1])
     when '--write-verify'
-        tape_write_verify(db, report, rewind, offline, args[0], args[1])
+        tape_write_verify(db, report, rewind, offline, compression, args[0], args[1])
     when '--replace'
         tape_replace(db, report, args[0], args[1])
+    when '--stage'
+        tape_stage(db, report, args[0], args[1])
 
     when '--add-tapeset'
         tapeset_add(db, report, double, triple, incremental, ffd, no_tape_level, args)
