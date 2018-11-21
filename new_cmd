@@ -255,37 +255,6 @@ class Report < ReportBase
                :s_rm => 0, :l_add => 0, :l_rm => 0 }
     end
 
-    def tool_init(version, db_version) # TODO: Delete me.
-        puts("Backuptool (version: #{version}, db_version: #{db_version})".color(CC::CYAN)) unless (@quiet)
-    end
-
-    def db_create() # TODO: Delete me.
-        warning('New database created.') unless (@quiet)
-    end
-
-    def db_increment(from) # TODO: Delete me.
-        warning("Database schema update from #{from} to #{from + 1}.")
-    end
-
-    def db_incompatible(version_expected, version, db_version_expected, db_version) # TODO: Delete me.
-        error("Incompatible versions. (db_v: #{version} > exp_db_v: #{version_expected}) || " +
-                  "(schema_db_v: #{db_version} > exp_schema_db_v: #{db_version_expected})")
-    end
-
-    def db_async() # TODO: Delete me.
-        warning('Database in asynchronous mode.') unless (@quiet)
-    end
-
-    def db_init(files, tapes, tapesets, links)
-        data = [{files: files, tapes: tapes, tapesets: tapesets, links: links}]
-        puts('Database loaded. Contents:') if (@verbose)
-        table(data, data[0].keys) if (@verbose)
-    end
-
-    def db_exception(exception) # TODO: Delete me.
-        error('SQL exception: ' + exception.to_s())
-    end
-
     def file_added(absolute_path)
         @r[:f_add] += 1
         puts("File #{absolute_path} was added.".color(CC::BLUE)) if (@verbose)
@@ -299,10 +268,6 @@ class Report < ReportBase
     def file_removed(absolute_path)
         @r[:f_rm] += 1
         puts("File #{absolute_path} was removed.".color(CC::BLUE)) if (@verbose)
-    end
-
-    def file_duplicate(db_absolute_path, match_absolute_path) # TODO: Delete me.
-        info("Duplicate file: master=#{db_absolute_path} duplicate=#{match_absolute_path}")
     end
 
     def tape_added(label)
@@ -396,11 +361,11 @@ def db_create_schema(db, report, version, db_version)
     db_create_tapes_table(db)
     db_create_tapesets_table(db)
     db_create_links_table(db)
-    report.db_create()
+    report.warning('New database created.')
 end
 
 def db_increment_schema(db, current, report)
-    report.db_increment(current)
+    report.warning("Database schema update from #{current} to #{current + 1}.")
     if (current == 1)
         # Create the new links table and fill it with the information from the other tables.
         db_create_links_table(db)
@@ -446,14 +411,15 @@ def db_check_schema(db, report, version, db_version)
     db_version_in_db = versions[0][1]
 
     if ((version_in_db > version) || (db_version_in_db > db_version))
-        report.db_incompatible(version, version_in_db, db_version, db_version_in_db)
+        report.error("Incompatible versions. (db_v: #{version_in_db} > exp_db_v: #{version}) || " +
+                  "(schema_db_v: #{db_version_in_db} > exp_schema_db_v: #{db_version})")
         exit(-1) # Impossible to continue.
     end
 
     db_update_schema(db, report, version, db_version)
 end
 
-def db_init(report, version, db_version, async, wrapper = nil)
+def db_init(report, version, db_version, async, verbose, wrapper = nil)
     if (wrapper.nil?)
         db = SQLite3::Database.new("backuptool.db")
     else
@@ -463,7 +429,7 @@ def db_init(report, version, db_version, async, wrapper = nil)
 
     if (async)
         db.execute('PRAGMA synchronous = OFF')
-        report.db_async()
+        report.warning('Database in asynchronous mode.')
     end
 
     if (db_empty?(db))
@@ -476,7 +442,10 @@ def db_init(report, version, db_version, async, wrapper = nil)
     tapes = db.get_first_value('SELECT COUNT(*) FROM tapes')
     tapesets = db.get_first_value('SELECT COUNT(*) FROM tapesets')
     links = db.get_first_value('SELECT COUNT(*) FROM links')
-    report.db_init(files, tapes, tapesets, links)
+
+    data = [{files: files, tapes: tapes, tapesets: tapesets, links: links}]
+    report.table(data, data[0].keys) if (verbose)
+    report.msg('Database loaded.')
 
     return db
 end
@@ -859,7 +828,7 @@ end
 #-----------------------------------------------------------------------------------------------------------------------
 # Tar method section
 
-def tar_calc_sizes(files, column)
+def tar_calc_sizes(files, column) # TODO: Delete me.
     size = 0
     overhead = 0
     files.each() do |file|
@@ -1426,13 +1395,13 @@ begin
     report.configure(verbose, quiet)
 
     # Startup banner.
-    report.tool_init(version, db_version)
+    report.info("Backuptool (version: #{version}, db_version: #{db_version})".color(CC::CYAN))
 
     # Initialize the database.
     if (sql)
-        db = db_init(report, version, db_version, async, DbWrapper.new())
+        db = db_init(report, version, db_version, async, verbose, DbWrapper.new())
     else
-        db = db_init(report, version, db_version, async)
+        db = db_init(report, version, db_version, async, verbose)
     end
 
     # Execute selected action.
@@ -1498,7 +1467,7 @@ begin
     # Final report.
     report.finalize()
 rescue SQLite3::Exception => exception
-    report.db_exception(exception)
+    report.error('SQL exception: ' + exception.to_s())
 ensure
     db.close() if (db)
 end
