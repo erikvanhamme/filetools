@@ -14,6 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+require 'digest/sha1'
 require 'sqlite3'
 
 #-----------------------------------------------------------------------------------------------------------------------
@@ -728,11 +729,6 @@ def tape_erase(db, report, rewind, offline, label, device)
 end
 
 def tape_write(db, report, rewind, offline, compression, label, device)
-    if (not (File.chardev?(device) && File.writable?(device)))
-        report.error("Path #{device} is not a character device or not writable.")
-        return false
-    end
-
     in_db = db.get_first_value("SELECT COUNT (*) FROM tapes WHERE label=\"#{label}\"")
     if (in_db == 0)
         report.error("Tape with label #{label} is not in the database.")
@@ -766,11 +762,6 @@ def tape_write(db, report, rewind, offline, compression, label, device)
 end
 
 def tape_verify(db, report, rewind, offline, label, device)
-    if (not (File.chardev?(device) && File.readable?(device)))
-        report.error("Path #{device} is not a character device or not writable.")
-        return false
-    end
-
     in_db = db.get_first_value("SELECT COUNT (*) FROM tapes WHERE label=\"#{label}\"")
     if (in_db == 0)
         report.error("Tape with label #{label} is not in the database.")
@@ -779,9 +770,20 @@ def tape_verify(db, report, rewind, offline, label, device)
 
     return false unless (tape_set_block_size(report, device, 8192 * 512))
 
-    # TODO: Implement me.
+    t_start = Time.now()
+    report.time("Started verifying tape", t_start)
 
-    return false
+    return false unless (tar_verify(report, device))
+
+    tape_mark_verified(db, report, [label])
+
+    return false if (rewind && (not tape_rewind(report, device)))
+    return false if (offline && (not tape_offline(report, device)))
+
+    t_end = Time.now()
+    report.duration("Finished verifying tape", t_start, t_end)
+
+    return true
 end
 
 def tape_write_verify(db, report, rewind, offline, compression, label, device)
@@ -933,6 +935,186 @@ def tar_write(report, files, output)
         filelist.close() unless (filelist.nil?())
         File.delete('manifest.txt')
         File.delete('filelist.txt')
+    end
+end
+
+def tar_block_header_checksum_valid?(block)
+    bytes = block.unpack('C512')
+    cksum_bytes = []
+    for i in 0..7
+        cksum_bytes << bytes[i + 148]
+        bytes[i + 148] = 32
+    end
+    cksum_in_block = cksum_bytes.pack('C6').to_i(8)
+    cksum_calc = 0
+    bytes.each() do |byte|
+        cksum_calc += byte
+    end
+    return cksum_calc == cksum_in_block
+end
+
+def tar_block_header_parse(block)
+    return {
+        :name => block[0..99].strip!(),
+        :mode => block[100..107].strip!(),
+        :uid => block[108..115].strip!(),
+        :gid => block[116..123].strip!(),
+        :size => block[124..135].strip!().to_i(8),
+        :mtime => block[136..147].strip!().to_i(8),
+        :checksum => block[148..155].strip!().to_i(8),
+        :link => block[156],
+        :link_name => block[157..256].strip!(),
+        :ustar => block[257..262].strip!(),
+        :ustar_version => block[263..264].to_i(8),
+        :owner_user => block[265..296].strip!(),
+        :owner_group => block[297..328].strip!(),
+        :dev_major_num => block[329..336].strip!().to_i(8),
+        :dev_minor_num => block[337..344].strip!().to_i(8),
+        :name_prefix => block[345..499].strip!()
+    }
+end
+
+def tar_verify(report, input)
+    macro_block_size = 8192 * 512
+    verified = 0
+    incorrect = 0
+
+    begin
+        stream = File.open(input, 'rb')
+
+        state = :scan
+        ext_header = nil
+        ext_header_file_size = nil
+        header = nil
+        processed = 0
+        digest = nil
+        read_manifest = false
+        filename = ''
+        hashes = {}
+
+        while(true)
+            macro_block = stream.read(macro_block_size)
+            break if (macro_block.nil?())
+
+            case macro_block.length()
+            when macro_block_size
+                left = macro_block_size
+                offset = 0
+                while (left > 0)
+                    block = macro_block[offset..(offset + 511)]
+
+                    case state
+                    when :scan
+                        if (tar_block_header_checksum_valid?(block))
+                            x = tar_block_header_parse(block)
+                            if (x[:link] == 'x') # PAX extended header.
+                                ext_header = x
+                                ext_header_file_size = nil
+                                processed = 0
+                                state = :ext
+                            elsif (x[:link] == '0') # USTAR file header.
+                                header = x
+
+                                filename = header[:prefix].to_s() + header[:name]
+                                # report.msg("Verify file #{filename}")
+
+                                if (filename == 'manifest.txt')
+                                    read_manifest = true
+                                    manifest = ''
+                                end
+
+                                header[:size] = ext_header_file_size unless (ext_header_file_size.nil?())
+                                processed = 0
+                                digest = Digest::SHA1.new()
+                                # Handle the special case of 0-length files in the tarball.
+                                if (header[:size] == 0)
+                                    calc_sha1 = digest.hexdigest()
+                                    manifest_sha1 = hashes[filename]
+                                    if (manifest_sha1.nil?())
+                                        report.error("File #{filename} is not in manifest.")
+                                    else
+                                        unless (manifest_sha1 == calc_sha1)
+                                            report.error("File #{filename} does not match manifest hash.")
+                                            incorrect += 1
+                                        end
+                                    end
+    
+                                    verified += 1
+
+                                    state = :scan
+                                else
+                                    state = :file
+                                end
+                            end
+                        end
+                    when :ext
+                        processed += 512
+                        if (processed >= ext_header[:size])
+                            state = :scan
+                        end
+                    when :file
+                        length = [512, (header[:size] - processed)].min()
+                        if (read_manifest)
+                            manifest += block[0..(length - 1)]
+                        else
+                            # If block is here to speedupify the digest. No need to copy bytes if full block is digested.
+                            if (length != 512)
+                                digest.update(block[0..(length - 1)])
+                            else
+                                digest.update(block)
+                            end
+                        end
+
+                        processed += 512
+                        if (processed >= header[:size])
+                            if (read_manifest)
+                                read_manifest = false
+                                manifest.split("\n").each() do |line|
+                                    data = line.split('  ')
+                                    hashes[data[1]] = data[0]
+                                end
+                            else
+                                calc_sha1 = digest.hexdigest()
+                                manifest_sha1 = hashes[filename]
+                                if (manifest_sha1.nil?())
+                                    report.error("File #{filename} is not in manifest.")
+                                else
+                                    unless (manifest_sha1 == calc_sha1)
+                                        report.error("File #{filename} does not match manifest hash.")
+                                        incorrect += 1
+                                    end
+                                end
+
+                                verified += 1
+                            end
+                            state = :scan
+                        end
+
+                    end
+
+                    left -= 512
+                    offset += 512
+                end
+            when 0
+                break # At EOF.
+            else
+                report.error("Truncated tarball.")
+                return false
+            end
+        end
+
+        if (incorrect > 0)
+            report.error("Verified #{verified} files, #{incorrect} of which were incorrect.")
+        else
+            report.info("Verified #{verified} files, all correct.")
+        end
+
+        return true
+    rescue IOError => e
+
+        return false
+    ensure
+        stream.close() unless (stream.nil?())
     end
 end
 
@@ -1104,7 +1286,7 @@ def tool_validate_arg(arg, type)
     when :label
         return (arg =~ /[A-Z0-9]{6}[L]{1}[1-8]{1}/) || (arg =~ /[A-Z0-9]{6}M8/)
     when :device
-        return File.readable?(arg) && File.writable?(arg)
+        return File.chardev?(arg) && File.readable?(arg) && File.writable?(arg)
     when :searchterm, :name
         # There is no enforcement on search terms or names.
         return true
