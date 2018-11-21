@@ -1,5 +1,21 @@
 #!/usr/bin/ruby
 
+# Copyright 2018 Erik Van Hamme
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+require 'sqlite3'
+
 #-----------------------------------------------------------------------------------------------------------------------
 # Class definitions
 
@@ -91,7 +107,7 @@ class ReportBase # COMMON
     end
 
     def warning(s)
-        puts("Warning: #{s}".color(CC::YELLOW()))
+        puts("Warning: #{s}".color(CC::YELLOW))
     end
 
     def error(s)
@@ -230,6 +246,401 @@ class DbWrapper # COMMON
     def close()
         @db.close()
     end
+end
+
+class Report < ReportBase
+    def initialize()
+        @r = { :f_add => 0, :f_up => 0, :f_rm => 0, :t_add => 0, :t_up => 0, :t_rm => 0, :s_add => 0, :s_up => 0,
+               :s_rm => 0, :l_add => 0, :l_rm => 0 }
+    end
+
+    def tool_init(version, db_version) # TODO: Delete me.
+        puts("Backuptool (version: #{version}, db_version: #{db_version})".color(CC::CYAN)) unless (@quiet)
+    end
+
+    def db_create() # TODO: Delete me.
+        warning('New database created.') unless (@quiet)
+    end
+
+    def db_increment(from) # TODO: Delete me.
+        warning("Database schema update from #{from} to #{from + 1}.")
+    end
+
+    def db_incompatible(version_expected, version, db_version_expected, db_version) # TODO: Delete me.
+        error("Incompatible versions. (db_v: #{version} > exp_db_v: #{version_expected}) || " +
+                  "(schema_db_v: #{db_version} > exp_schema_db_v: #{db_version_expected})")
+    end
+
+    def db_async() # TODO: Delete me.
+        warning('Database in asynchronous mode.') unless (@quiet)
+    end
+
+    def db_init(files, tapes, tapesets, links)
+        data = [{files: files, tapes: tapes, tapesets: tapesets, links: links}]
+        puts('Database loaded. Contents:') if (@verbose)
+        table(data, data[0].keys) if (@verbose)
+    end
+
+    def db_exception(exception) # TODO: Delete me.
+        error('SQL exception: ' + exception.to_s())
+    end
+
+    def file_added(absolute_path)
+        @r[:f_add] += 1
+        puts("File #{absolute_path} was added.".color(CC::BLUE)) if (@verbose)
+    end
+
+    def file_updated(absolute_path)
+        @r[:f_up] += 1
+        puts("File #{absolute_path} was updated.".color(CC::BLUE)) if (@verbose)
+    end
+
+    def file_removed(absolute_path)
+        @r[:f_rm] += 1
+        puts("File #{absolute_path} was removed.".color(CC::BLUE)) if (@verbose)
+    end
+
+    def file_duplicate(db_absolute_path, match_absolute_path) # TODO: Delete me.
+        info("Duplicate file: master=#{db_absolute_path} duplicate=#{match_absolute_path}")
+    end
+
+    def tape_added(label)
+        @r[:t_add] += 1
+        puts("Tape #{label} added.".color(CC::BLUE)) if (@verbose)
+    end
+
+    def tape_updated(label)
+        @r[:t_up] += 1
+        puts("Tape #{label} updated.".color(CC::BLUE)) if (@verbose)
+    end
+
+    def tape_removed(label)
+        @r[:t_rm] += 1
+        puts("Tape #{label} removed.".color(CC::BLUE)) if (@verbose)
+    end
+
+    def tapeset_added(name)
+        @r[:s_add] += 1
+        puts("Tapeset #{name} added.".color(CC::BLUE)) if (@verbose)
+    end
+
+    def tapeset_updated(name)
+        @r[:s_up] += 1
+        puts("Tapeset #{name} updated.".color(CC::BLUE)) if (@verbose)
+    end
+
+    def tapeset_removed(name)
+        @r[:s_rm] += 1
+        puts("Tapeset #{name} removed.".color(CC::BLUE)) if (@verbose)
+    end
+
+    def link_added(path, label, tapeset)
+        @r[:l_add] += 1
+        puts("Link added: #{path} #{label} #{tapeset}".color(CC::BLUE)) if (@verbose)
+    end
+
+    def link_removed(path, label, tapeset)
+        @r[:l_rm] += 1
+        puts("Link removed: #{path} #{label} #{tapeset}".color(CC::BLUE)) if (@verbose)
+    end
+
+    def finalize()
+        if (@verbose)
+            puts('Report:')
+            if ((@r.values.inject(0) do |sum, x| sum + x end) > 0)
+                table([@r], @r.keys)
+            else
+                puts('No Database modifications.')
+            end
+        end
+    end
+end
+
+#-----------------------------------------------------------------------------------------------------------------------
+# DB method section
+
+def db_empty?(db)
+    version_table = db.execute('SELECT name FROM sqlite_master WHERE type="table" AND name="version"')
+    version_table.empty?()
+end
+
+def db_create_version_table(db, version, db_version)
+    db.execute('CREATE TABLE version(version INTEGER NOT NULL, db_version INTEGER NOT NULL)')
+    db.execute("INSERT INTO version(version, db_version) VALUES(#{version}, #{db_version})")
+end
+
+def db_create_files_table(db)
+    db.execute('CREATE TABLE IF NOT EXISTS files(number INTEGER PRIMARY KEY, sha1 TEXT, size INTEGER, mtime INTEGER,' +
+                   ' path TEXT, on_disk INTEGER)')
+    db.execute('CREATE INDEX IF NOT EXISTS files_sha1 ON files(sha1)')
+    db.execute('CREATE INDEX IF NOT EXISTS files_path ON files(path)')
+end
+
+def db_create_tapes_table(db)
+    db.execute('CREATE TABLE IF NOT EXISTS tapes(number INTEGER PRIMARY KEY, label TEXT, size INTEGER, tapeset_idx' +
+                   ' INTEGER, written INTEGER, verified INTEGER)')
+end
+
+def db_create_tapesets_table(db)
+    db.execute('CREATE TABLE IF NOT EXISTS tapesets(number INTEGER PRIMARY KEY, name TEXT UNIQUE, tape_count INTEGER)')
+end
+
+def db_create_links_table(db)
+    db.execute('CREATE TABLE IF NOT EXISTS links(file_number INTEGER, tape_number INTEGER, tapeset_number INTEGER)')
+end
+
+def db_create_schema(db, report, version, db_version)
+    db_create_version_table(db, version, db_version)
+    db_create_files_table(db)
+    db_create_tapes_table(db)
+    db_create_tapesets_table(db)
+    db_create_links_table(db)
+    report.db_create()
+end
+
+def db_increment_schema(db, current, report)
+    report.db_increment(current)
+    if (current == 1)
+        # Create the new links table and fill it with the information from the other tables.
+        db_create_links_table(db)
+        db.execute('INSERT INTO links (file_number, tape_number, tapeset_number) SELECT file_number, tape_number,' +
+                       ' tapeset FROM file_tape_links LEFT JOIN tapes ON tapes.number=file_tape_links.tape_number')
+
+        # Drop the column tapeset from tapes table through copying to new table after rename. (Sqlite3 does not support
+        # drop column.)
+        db.execute('ALTER TABLE tapes RENAME TO tapes_v1')
+        db_create_tapes_table(db)
+        db.execute('INSERT INTO tapes (number, label, size, tapeset_idx) SELECT number, label, size, tapeset_idx FROM' +
+                       ' tapes_v1')
+
+        # Drop the unused tables.
+        db.execute('DROP TABLE file_tape_links')
+        db.execute('DROP TABLE tapes_v1')
+    end
+    if (current == 2)
+        # TODO: Handle schema update from V2 to V3 here.
+    end
+    current += 1
+    db.execute("UPDATE version SET db_version=#{current}")
+    return current
+end
+
+def db_update_schema(db, report, version, db_version)
+    versions = db.execute('SELECT * FROM version')
+    version_in_db = versions[0][0]
+    db_version_in_db = versions[0][1]
+
+    if (version_in_db != version)
+        db.execute("UPDATE version SET version=#{version}")
+    end
+
+    while (db_version_in_db < db_version)
+        db_version_in_db = db_increment_schema(db, db_version_in_db, report)
+    end
+end
+
+def db_check_schema(db, report, version, db_version)
+    versions = db.execute('SELECT * FROM version')
+    version_in_db = versions[0][0]
+    db_version_in_db = versions[0][1]
+
+    if ((version_in_db > version) || (db_version_in_db > db_version))
+        report.db_incompatible(version, version_in_db, db_version, db_version_in_db)
+        exit(-1) # Impossible to continue.
+    end
+
+    db_update_schema(db, report, version, db_version)
+end
+
+def db_init(report, version, db_version, async, wrapper = nil)
+    if (wrapper.nil?)
+        db = SQLite3::Database.new("backuptool.db")
+    else
+        wrapper.wrap(SQLite3::Database.new("backuptool.db"))
+        db = wrapper
+    end
+
+    if (async)
+        db.execute('PRAGMA synchronous = OFF')
+        report.db_async()
+    end
+
+    if (db_empty?(db))
+        db_create_schema(db, report, version, db_version)
+    else
+        db_check_schema(db, report, version, db_version)
+    end
+
+    files = db.get_first_value('SELECT COUNT(*) FROM files')
+    tapes = db.get_first_value('SELECT COUNT(*) FROM tapes')
+    tapesets = db.get_first_value('SELECT COUNT(*) FROM tapesets')
+    links = db.get_first_value('SELECT COUNT(*) FROM links')
+    report.db_init(files, tapes, tapesets, links)
+
+    return db
+end
+
+#-----------------------------------------------------------------------------------------------------------------------
+# Tape method section
+
+def tape_valid_label?(label)
+    if (label.length() != 8)
+        return false
+    end
+
+    # Taken LTO tape label spec from:
+    # https://www.ibm.com/support/knowledgecenter/en/STCMML8/com.ibm.storage.ts3500.doc/ipg_3584_mehlab.html
+    # Only supporting LTO1-LTO8(+M8) for now.
+    return (label =~ /[A-Z0-9]{6}[L]{1}[1-8]{1}/) || (label =~ /[A-Z0-9]{6}M8/)
+end
+
+def tape_size(label)
+    size = 0
+    suffix = label.split(//).last(2).join()
+    case suffix
+    when 'L1'
+        size = 100000000000
+    when 'L2'
+        size = 200000000000
+    when 'L3'
+        size = 400000000000
+    when 'L4'
+        size = 800000000000
+    when 'L5'
+        size = 1500000000000
+    when 'L6'
+        size = 2500000000000
+    when 'L7'
+        size = 6000000000000
+    when 'L8'
+        size = 12000000000000
+    when 'M8'
+        size = 9000000000000
+    end
+    return size
+end
+
+def tape_add(db, report, tapes)
+    tapes.each() do |label|
+        in_db = db.get_first_value("SELECT COUNT(*) FROM tapes WHERE label=\"#{label}\"")
+        if (in_db == 0)
+            size = tape_size(label)
+            db.execute("INSERT INTO tapes (label, size, tapeset_idx) VALUES (\"#{label}\", #{size}, -1)")
+            report.tape_added(label)
+        else
+            report.error("Tape with label #{label} is already in the database.")
+        end
+    end
+end
+
+def tape_update(db, report, old_name, new_name)
+    in_db = db.get_first_value("SELECT COUNT (*) FROM tapes WHERE label=\"#{new_name}\"")
+    if (in_db == 0)
+        db.execute("UPDATE tapes SET label=\"#{new_name}\", written=NULL, verified=NULL WHERE label=\"#{old_name}\"")
+        report.tape_updated(old_name)
+    else
+        report.error("Cannot rename #{old_name} to #{new_name}, #{new_name} exists in the database.")
+    end
+end
+
+def tape_remove(db, report, tapes)
+    tapes.each() do |label|
+        count = db.get_first_value("SELECT COUNT (*) FROM links LEFT JOIN tapes ON tapes.number=links.tape_number" +
+                                       " WHERE tapes.label=\"#{label}\"")
+        if (count == 0)
+            db.execute("DELETE FROM tapes WHERE label=\"#{label}\"")
+            report.tape_removed(label)
+        else
+            report.error("Tape with label #{label} is part of a tapeset.")
+        end
+    end
+end
+
+def tape_list(db, report, tapes_fuzzy)
+    query = 'SELECT label FROM tapes'
+    unless (tapes_fuzzy.empty?())
+        query += ' WHERE'
+        tapes_fuzzy.each() do |label|
+            query += " label LIKE \"#{label}%\" OR"
+        end
+        query.chomp!(' OR')
+    end
+    query += ' ORDER BY label ASC'
+    tapes = db.execute(query)
+    tapes.collect!() do |tape|
+        {:label => tape[0]}
+    end
+    report.table(tapes, [:label])
+end
+
+def tape_sizes(db, tape_number)
+    query = "SELECT files.size FROM links LEFT JOIN files ON links.file_number = files.number WHERE " +
+        "links.tape_number=#{tape_number}"
+    files = db.execute(query)
+
+    return tar_calc_sizes(files, 0)
+end
+
+def tape_info(db, report, tapes, verbose)
+    query = 'SELECT DISTINCT tapes.number, tapes.label, tapes.size, tapes.tapeset_idx, tapesets.name, tapes.written,' +
+        ' tapes.verified FROM tapes LEFT JOIN links ON links.tape_number=tapes.number LEFT JOIN tapesets ON' +
+        ' tapesets.number=links.tapeset_number'
+    unless (tapes.empty?())
+        query += ' WHERE'
+        tapes.each() do |label|
+            query += " label=\"#{label}\" OR"
+        end
+        query.chomp!(' OR')
+    end
+    query += ' ORDER BY tapes.label ASC'
+
+    tapes = db.execute(query)
+    tapes.collect!() do |tape|
+        files, size, tar_size, overhead = tape_sizes(db, tape[0])
+
+        used = (tar_size.to_f() / (tape[2].to_f() * 0.99)) * 100
+
+        w = tape[5].nil? ? nil : Time.at(tape[5])
+        v = tape[6].nil? ? nil : Time.at(tape[6])
+
+        {:label => tape[1], :files => files, :size => size, :tar_size => tar_size, :overhead => overhead,
+         :capacity => tape[2], :usage => "#{used.round(1)} %", :ts_idx => tape[3], :tapeset => tape[4],
+         :written => w, :verified => v}
+    end
+    if (verbose)
+        report.table(tapes, [:label, :files, :size, :tar_size, :overhead, :capacity, :usage, :ts_idx, :tapeset,
+                             :written, :verified])
+    else
+        report.table(tapes, [:label, :files, :usage, :tapeset, :written, :verified])
+    end
+end
+
+#-----------------------------------------------------------------------------------------------------------------------
+# Tar method section
+
+def tar_calc_sizes(files, column)
+    size = 0
+    overhead = 0
+    files.each() do |file|
+        size += file[column]
+        overhead += (512 * 3) + (512 - (file[column] % 512))
+    end
+    tar_size_no_footer = size + overhead
+    modulo = tar_size_no_footer % (8192 * 512)
+    if (modulo < 1024)
+        tar_footer_size = (8192 * 512) + modulo
+    else
+        tar_footer_size = (8192 * 512) - modulo
+    end
+    tar_size = tar_size_no_footer + tar_footer_size
+    overhead += tar_footer_size
+
+    if (files.length() == 0)
+        tar_size = 0
+        overhead = 0
+    end
+
+    return files.length(), size, tar_size, overhead
 end
 
 #-----------------------------------------------------------------------------------------------------------------------
@@ -514,7 +925,11 @@ end
 # Main section
 
 begin
-    report = ReportBase.new()
+    # Initialize variables
+    version = 2
+    db_version = 2
+    report = Report.new()
+    db = nil
 
     # Prepare for dealing with command line.
     possible_actions = tool_build_actions()
@@ -530,7 +945,15 @@ begin
 
     report.configure(verbose, quiet)
 
-    db = nil
+    # Startup banner.
+    report.tool_init(version, db_version)
+
+    # Initialize the database.
+    if (sql)
+        db = db_init(report, version, db_version, async, DbWrapper.new())
+    else
+        db = db_init(report, version, db_version, async)
+    end
 
     # Execute selected action.
     action = actions[0].long()
@@ -554,9 +977,9 @@ begin
     when '--remove-tapes'
         tape_remove(db, report, args)
     when '--list-tapes'
-        tape_list(db, report, args) # TODO: Warning: Changed signature.
+        tape_list(db, report, args)
     when '--info-tapes'
-        tape_info(db, report, args) # TODO: Warning: Changed signature.
+        tape_info(db, report, args, verbose)
     when '--manifest'
         tape_manifest(db, report, args[0]) # TODO: Warning: Changed signature.
     when '--mark-erased'
@@ -591,10 +1014,8 @@ begin
         report.error('Bug in tool_validate_command_line, should never be able to enter here.')
     end
 
-    report.info(args.to_s().color(CC::BLUE))
-    report.info([verbose, quiet, double, triple, incremental, ffd, async, rewind, offline, no_tape_level, sql].to_s().color(CC::GREEN))
-
-    report.table([[verbose, quiet, double, triple, incremental, ffd, async, rewind, offline, no_tape_level, sql]])
+    # Final report.
+    report.finalize()
 rescue SQLite3::Exception => exception
     report.db_exception(exception)
 ensure
