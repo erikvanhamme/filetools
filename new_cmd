@@ -481,20 +481,32 @@ def db_init(report, version, db_version, async, wrapper = nil)
 end
 
 #-----------------------------------------------------------------------------------------------------------------------
-# Tape method section
+# Path method section
 
-def tape_valid_label?(label)
-    if (label.length() != 8)
-        return false
-    end
-
-    # Taken LTO tape label spec from:
-    # https://www.ibm.com/support/knowledgecenter/en/STCMML8/com.ibm.storage.ts3500.doc/ipg_3584_mehlab.html
-    # Only supporting LTO1-LTO8(+M8) for now.
-    return (label =~ /[A-Z0-9]{6}[L]{1}[1-8]{1}/) || (label =~ /[A-Z0-9]{6}M8/)
+def path_add(db, report, paths)
+    # TODO: Implement me.
 end
 
-def tape_size(label)
+def path_update(db, report, paths)
+    # TODO: Implement me.
+end
+
+def path_remove(db, report, paths)
+    # TODO: Implement me.
+end
+
+def path_prune(db, report, paths)
+    # TODO: Implement me.
+end
+
+def path_check(db, report, paths)
+    # TODO: Implement me.
+end
+
+#-----------------------------------------------------------------------------------------------------------------------
+# Tape method section
+
+def tape_size(label) # HELPER
     size = 0
     suffix = label.split(//).last(2).join()
     case suffix
@@ -520,8 +532,59 @@ def tape_size(label)
     return size
 end
 
-def tape_add(db, report, tapes)
-    tapes.each() do |label|
+def tape_sizes(db, tape_number) # HELPER
+    query = "SELECT files.size FROM links LEFT JOIN files ON links.file_number = files.number WHERE " +
+        "links.tape_number=#{tape_number}"
+    files = db.execute(query)
+
+    return tar_calc_sizes(files, 0)
+end
+
+def tape_disable_compression(report, device) # HELPER
+    report.msg('Disabling compression.')
+    output = `mt-st -f #{device} compression 0`
+    unless (output == '')
+        report.error("mt-st error: #{output}")
+        return false
+    end
+    return true
+end
+
+def tape_set_block_size(report, device, block_size) # HELPER
+    report.msg('Setting block size.')
+    output = `mt-st -f #{device} setblk #{block_size}`
+    unless (output == '')
+        report.error("mt-st error: #{output}")
+        return false
+    end
+    return true
+end
+
+def tape_rewind(report, device) # HELPER
+    report.msg('Rewinding tape.')
+    output = `mt-st -f #{device} rewind`
+    unless (output == '')
+        report.error("Mt-st error: #{output}")
+        return false
+    end
+    return true
+end
+
+def tape_offline(report, device) # HELPER
+    report.msg('Offlining tape.')
+    output = `mt-st -f #{device} offline`
+    unless (output == '')
+        report.error("Mt-st error: #{output}")
+        return false
+    end
+    return true
+end
+
+
+
+
+def tape_add(db, report, labels)
+    labels.each() do |label|
         in_db = db.get_first_value("SELECT COUNT(*) FROM tapes WHERE label=\"#{label}\"")
         if (in_db == 0)
             size = tape_size(label)
@@ -533,18 +596,8 @@ def tape_add(db, report, tapes)
     end
 end
 
-def tape_update(db, report, old_name, new_name)
-    in_db = db.get_first_value("SELECT COUNT (*) FROM tapes WHERE label=\"#{new_name}\"")
-    if (in_db == 0)
-        db.execute("UPDATE tapes SET label=\"#{new_name}\", written=NULL, verified=NULL WHERE label=\"#{old_name}\"")
-        report.tape_updated(old_name)
-    else
-        report.error("Cannot rename #{old_name} to #{new_name}, #{new_name} exists in the database.")
-    end
-end
-
-def tape_remove(db, report, tapes)
-    tapes.each() do |label|
+def tape_remove(db, report, labels)
+    labels.each() do |label|
         count = db.get_first_value("SELECT COUNT (*) FROM links LEFT JOIN tapes ON tapes.number=links.tape_number" +
                                        " WHERE tapes.label=\"#{label}\"")
         if (count == 0)
@@ -556,12 +609,12 @@ def tape_remove(db, report, tapes)
     end
 end
 
-def tape_list(db, report, tapes_fuzzy)
+def tape_list(db, report, search_terms)
     query = 'SELECT label FROM tapes'
-    unless (tapes_fuzzy.empty?())
+    unless (search_terms.empty?())
         query += ' WHERE'
-        tapes_fuzzy.each() do |label|
-            query += " label LIKE \"#{label}%\" OR"
+        search_terms.each() do |search_term|
+            query += " label LIKE \"#{search_term}%\" OR"
         end
         query.chomp!(' OR')
     end
@@ -573,21 +626,13 @@ def tape_list(db, report, tapes_fuzzy)
     report.table(tapes, [:label])
 end
 
-def tape_sizes(db, tape_number)
-    query = "SELECT files.size FROM links LEFT JOIN files ON links.file_number = files.number WHERE " +
-        "links.tape_number=#{tape_number}"
-    files = db.execute(query)
-
-    return tar_calc_sizes(files, 0)
-end
-
-def tape_info(db, report, tapes, verbose)
+def tape_info(db, report, labels, verbose)
     query = 'SELECT DISTINCT tapes.number, tapes.label, tapes.size, tapes.tapeset_idx, tapesets.name, tapes.written,' +
         ' tapes.verified FROM tapes LEFT JOIN links ON links.tape_number=tapes.number LEFT JOIN tapesets ON' +
         ' tapesets.number=links.tapeset_number'
-    unless (tapes.empty?())
+    unless (labels.empty?())
         query += ' WHERE'
-        tapes.each() do |label|
+        labels.each() do |label|
             query += " label=\"#{label}\" OR"
         end
         query.chomp!(' OR')
@@ -613,6 +658,113 @@ def tape_info(db, report, tapes, verbose)
     else
         report.table(tapes, [:label, :files, :usage, :tapeset, :written, :verified])
     end
+end
+
+def tape_manifest(db, report, label)
+    report.msg("Manifest for tape with label #{label}:")
+    files = db.execute("SELECT path, sha1 FROM files LEFT JOIN links ON links.file_number=files.number LEFT" +
+                           " JOIN tapes ON tapes.number=links.tape_number WHERE tapes.label=\"#{label}\" ORDER" +
+                           " BY files.path ASC")
+    files.each() do |file|
+        report.always("#{file[1]}  #{file[0]}")
+    end
+end
+
+def tape_mark_erased(db, report, labels)
+    query = "UPDATE tapes SET written=NULL, verified=NULL WHERE"
+    labels.each() do |label|
+        query += " label=\"#{label}\" OR"
+    end
+    query.chomp!(' OR')
+    db.execute(query)
+    labels.each() do |label|
+        report.tape_updated(label)
+    end
+end
+
+def tape_mark_written(db, report, labels)
+    now = Time.new().to_i()
+    query = "UPDATE tapes SET written=#{now} WHERE"
+    labels.each() do |label|
+        query += " label=\"#{label}\" OR"
+    end
+    query.chomp!(' OR')
+    db.execute(query)
+    labels.each() do |label|
+        report.tape_updated(label)
+    end
+end
+
+def tape_mark_verified(db, report, labels)
+    now = Time.new().to_i()
+    query = "UPDATE tapes SET verified=#{now} WHERE"
+    labels.each() do |label|
+        query += " label=\"#{label}\" OR"
+    end
+    query.chomp!(' OR')
+    db.execute(query)
+    labels.each() do |label|
+        report.tape_updated(label)
+    end
+end
+
+def tape_erase(db, report, rewind, offline, label, device)
+    report.msg('Erasing tape.')
+    output = `mt-st -f #{device} erase`
+    unless (output == '')
+        report.error("Mt-st error: #{output}")
+        return false
+    end
+
+    tape_mark_erased(db, report, [label])
+
+    return false if (rewind && (not tape_rewind(report, device)))
+    return false if (offline && (not tape_offline(report, device)))
+end
+
+def tape_write(db, report, rewind, offline, label, device)
+    # TODO: Implement me.
+end
+
+def tape_verify(db, report, rewind, offline, label, device)
+    # TODO: Implement me.
+end
+
+def tape_write_verify(db, report, rewind, offline, label, device)
+    # TODO: Implement me.
+end
+
+def tape_replace(db, report, old_name, new_name)
+    in_db = db.get_first_value("SELECT COUNT (*) FROM tapes WHERE label=\"#{new_name}\"")
+    if (in_db == 0)
+        db.execute("UPDATE tapes SET label=\"#{new_name}\", written=NULL, verified=NULL WHERE label=\"#{old_name}\"")
+        report.tape_updated(old_name)
+    else
+        report.error("Cannot rename #{old_name} to #{new_name}, #{new_name} exists in the database.")
+    end
+end
+
+#-----------------------------------------------------------------------------------------------------------------------
+# Tapeset method section
+
+def tapeset_add(db, report, double, triple, incremental, ffd, no_tape_level, paths)
+    # TODO: Implement me.
+end
+
+def tapeset_remove(db, report, names)
+    # TODO: Implement me.
+end
+
+def tapeset_rename(db, report, old_name, new_name)
+    # TODO: Implement me.
+end
+
+def tapeset_list(db, report, searchterms)
+    # TODO: Implement me.
+end
+
+def tapeset_info(db, report, names)
+    # TODO: Implement me.
 end
 
 #-----------------------------------------------------------------------------------------------------------------------
@@ -799,7 +951,7 @@ def tool_usage(report, actions, modifiers)
     map << ['Actions:', [['Misc:', 1], ['Paths:', 5], ['Tapes:', 13], ['Tapesets:', 5]]]
     map << ['Modifiers:', [['Misc:', 4], ['Tapes:', 2], ['Tapesets:', 5]]]
 
-    tool_show_usage(report, 'backuptool usage help:', actions, modifiers, map)
+    tool_show_usage(report, 'Usage help:', actions, modifiers, map)
 end
 
 def tool_validate_arg(arg, type)
@@ -981,7 +1133,7 @@ begin
     when '--info-tapes'
         tape_info(db, report, args, verbose)
     when '--manifest'
-        tape_manifest(db, report, args[0]) # TODO: Warning: Changed signature.
+        tape_manifest(db, report, args[0])
     when '--mark-erased'
         tape_mark_erased(db, report, args)
     when '--mark-written'
@@ -989,19 +1141,18 @@ begin
     when '--mark-verified'
         tape_mark_verified(db, report, args)
     when '--erase'
-        tape_erase(report, rewind, offline, args[0], args[1]) # TODO: Warning: Changed signature.
+        tape_erase(db, report, rewind, offline, args[0], args[1])
     when '--write'
-        tape_write(report, rewind, offline, args[0], args[1]) # TODO: Warning: Changed signature.
+        tape_write(db, report, rewind, offline, args[0], args[1])
     when '--verify'
-        tape_verify(report, rewind, offline, args[0], args[1]) # TODO: Warning: Changed signature.
+        tape_verify(db, report, rewind, offline, args[0], args[1])
     when '--write-verify'
-        tape_write(report, true, false, args[0], args[1]) # TODO: Warning: Changed signature.
-        tape_verify(report, rewind, offline, args[0], args[1]) # TODO: Warning: Changed signature.
+        tape_write_verify(db, report, rewind, offline, args[0], args[1])
     when '--replace'
-        tape_update(db, report, args[0], args[1]) # TODO: Change name to tape_replace.
+        tape_replace(db, report, args[0], args[1])
 
     when '--add-tapeset'
-        tapeset_add(db, report, double, triple, incremental, ffd, no_tape_level, args) # Warning: Changed signature.
+        tapeset_add(db, report, double, triple, incremental, ffd, no_tape_level, args)
     when '--remove-tapesets'
         tapeset_remove(db, report, args)
     when '--rename'
