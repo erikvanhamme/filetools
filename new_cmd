@@ -1289,9 +1289,9 @@ begin
     when '--erase'
         tape_erase(db, report, rewind, offline, args[0], args[1])
     when '--write'
-        tape_write(db, report, rewind, offline, args[0], args[1])
+        tape_write(db, report, rewind, offline, compression, args[0], args[1])
     when '--verify'
-        tape_verify(db, report, rewind, offline, compression, args[0], args[1])
+        tape_verify(db, report, rewind, offline, args[0], args[1])
     when '--write-verify'
         tape_write_verify(db, report, rewind, offline, compression, args[0], args[1])
     when '--replace'
