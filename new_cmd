@@ -1,5 +1,62 @@
 #!/usr/bin/ruby
 
+# ANSI escape color codes.
+module CC
+    BLACK = 30
+    RED = 31
+    GREEN = 32
+    YELLOW = 33
+    BLUE = 34
+    MAGENTA = 35
+    CYAN = 36
+    WHITE = 37
+    BRIGHT_BLACK = 90
+    BRIGHT_RED = 91
+    BRIGHT_GREEN = 92
+    BRIGHT_YELLOW = 93
+    BRIGHT_BLUE = 94
+    BRIGHT_MAGENTA = 95
+    BRIGHT_CYAN = 96
+    BRIGHT_WHITE = 97
+end
+
+class String
+    def color(fg, bg = nil)
+        if (bg.nil?())
+            return "\e[#{fg}m#{self}\e[0m"
+        else
+            return "\e[#{fg};#{bg + 10}m#{self}\e[0m"
+        end
+    end
+
+    def to_ws(width)
+        l = length()
+        if (l < width)
+            # Grow.
+            return self + (' ' * (width - l))
+        elsif (l > width)
+            # Shrink.
+            if (width > 3)
+                return self[0..(width - 4)] + '...'
+            else
+                return self[0..(width - 1)]
+            end
+        else
+            return self
+        end
+    end
+end
+
+class Array
+    def keys()
+        k = []
+        for i in 0..(length() - 1)
+            k << i
+        end
+        return k
+    end
+end
+
 class Arg
     attr_accessor :long, :short, :min_args, :max_args, :args_type, :help
 
@@ -28,7 +85,6 @@ def tool_build_modifiers()
     m << Arg.new('--incremental'  , '-i', 0, 0, [], 'Incremental tapeset creation for --add-tapeset.')
     m << Arg.new('--ffd'          , nil , 0, 0, [], 'First Fit Decreasing bin packing for --add-tapeset.')
     m << Arg.new('--no-tape-level', nil , 0, 0, [], 'Fill tape to max instead of leveling for --add-tapeset.')
-
     return m
 end
 
@@ -115,11 +171,11 @@ def tool_usage(actions, modifiers)
                 args = tool_usage_args(action)
                 short = action.short().nil?() ? '' : action.short()
                 long = "#{action.long()} #{args}"
-                
+
                 short = short + (' ' * (10 - short.length()))
                 long = long + (' ' * (35 - long.length()))
                 puts(short + long + action.help())
-        
+
                 index += 1
             end
         end
@@ -286,6 +342,87 @@ def tool_split_modifiers(modifiers)
     return verbose, quiet, double, triple, incremental, ffd, async, rewind, offline, no_tape_level, sql
 end
 
+# TODO: Consider putting this in the report after merge with backuptool.
+def tool_table(data, columns = nil, widths = nil, hide_table = false)
+    # Assemble the columns from the data unless given.
+    if (columns.nil?())
+        columns = []
+        data.each() do |row|
+            columns << row.keys()
+        end
+        columns.flatten!().uniq!()
+    end
+
+    # Calculate the wanted column lengths from the data.
+    lengths = Array.new(columns.length(), 0)
+    strings = []
+    col_idx = 0
+    columns.each() do |col|
+        l = col.to_s().length()
+        if (lengths[col_idx] < l)
+            lengths[col_idx] = l
+        end
+        col_idx += 1
+    end
+    data.each() do |row|
+        col_idx = 0
+        columns.each() do |col|
+            s = row[col].to_s()
+            l = s.length()
+
+            if (lengths[col_idx] < l)
+                lengths[col_idx] = l
+            end
+
+            strings << s
+
+            col_idx += 1
+        end
+    end
+
+    # Deal with maximum widths if provided.
+    unless (widths.nil?())
+        col_idx = 0
+        columns.each() do |col|
+            unless (widths[col].nil?())
+                lengths[col_idx] = widths[col]
+            end
+            col_idx += 1
+        end
+    end
+
+    # Print the table header.
+    unless (hide_table)
+        header = ''
+        line = ''
+        col_idx = 0
+        columns.each() do |col|
+            header += col.to_s().upcase().to_ws(lengths[col_idx]) + ' | '
+            line += ('-' * lengths[col_idx]) + '-+-'
+            col_idx += 1
+        end
+        header.chomp!(' | ')
+        line.chomp!('-+-')
+        puts header
+        puts line
+    end
+
+    # Print the table data.
+    separator = hide_table ? '' : ' | '
+    idx = 0
+    data.length().times() do ||
+        row_string = ''
+        col_idx = 0
+        columns.length().times() do ||
+            row_string += strings[idx].to_ws(lengths[col_idx]) + separator
+            col_idx += 1
+            idx += 1
+        end
+        row_string.chomp!(separator)
+        puts row_string
+    end
+end
+
 def tool_main()
     # Prepare for dealing with command line.
     possible_actions = tool_build_actions()
@@ -359,8 +496,8 @@ def tool_main()
         tapeset_info(db, report, args)
     end
 
-    puts args.to_s()
-    puts [verbose, quiet, double, triple, incremental, ffd, async, rewind, offline, no_tape_level, sql].to_s()
+    puts args.to_s().color(CC::BLUE)
+    puts [verbose, quiet, double, triple, incremental, ffd, async, rewind, offline, no_tape_level, sql].to_s().color(CC::GREEN)
 end
 
 tool_main()
