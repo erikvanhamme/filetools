@@ -985,7 +985,7 @@ def tar_verify(report, input)
                                 header = x
 
                                 filename = header[:prefix].to_s() + header[:name]
-                                # report.msg("Verify file #{filename}")
+                                report.msg("Verify file #{filename}")
 
                                 if (filename == 'manifest.txt')
                                     read_manifest = true
