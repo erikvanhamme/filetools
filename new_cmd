@@ -131,7 +131,7 @@ class ReportBase # COMMON
 
         d_s = sprintf('%02d:%02d:%02d.%02d', hours, minutes, seconds, fraction)
 
-        puts("#{s} at #{t_end}. Duration was #{d_s} .".color(CC::BRIGHT_MAGENTA)) unless (@quiet)
+        puts("#{s} at #{t_end}. Duration was #{d_s}.".color(CC::BRIGHT_MAGENTA)) unless (@quiet)
     end
 
     def table(data, columns = nil, widths = nil, hide_table = false)
@@ -540,11 +540,16 @@ def tape_sizes(db, tape_number) # HELPER
     return tar_calc_sizes(files, 0)
 end
 
-def tape_disable_compression(report, device) # HELPER
-    report.msg('Disabling compression.')
-    output = `mt-st -f #{device} compression 0`
-    unless (output == '')
-        report.error("mt-st error: #{output}")
+def tape_set_compression(report, device, compression) # HELPER
+    if (compression)
+        report.msg('Enabling compression.')
+        result = `mt-st -f #{device} compression 1 2>&1`
+    else
+        report.msg('Disabling compression.')
+        result = `mt-st -f #{device} compression 0 2>&1`
+    end
+    unless ($?.success?())
+        report.error("mt-st error: #{result}")
         return false
     end
     return true
@@ -552,9 +557,9 @@ end
 
 def tape_set_block_size(report, device, block_size) # HELPER
     report.msg('Setting block size.')
-    output = `mt-st -f #{device} setblk #{block_size}`
-    unless (output == '')
-        report.error("mt-st error: #{output}")
+    result = `mt-st -f #{device} setblk #{block_size} 2>&1`
+    unless ($?.success?())
+        report.error("mt-st error: #{result}")
         return false
     end
     return true
@@ -562,9 +567,9 @@ end
 
 def tape_rewind(report, device) # HELPER
     report.msg('Rewinding tape.')
-    output = `mt-st -f #{device} rewind`
-    unless (output == '')
-        report.error("Mt-st error: #{output}")
+    result = `mt-st -f #{device} rewind 2>&1`
+    unless ($?.success?())
+        report.error("Mt-st error: #{result}")
         return false
     end
     return true
@@ -572,9 +577,9 @@ end
 
 def tape_offline(report, device) # HELPER
     report.msg('Offlining tape.')
-    output = `mt-st -f #{device} offline`
-    unless (output == '')
-        report.error("Mt-st error: #{output}")
+    result = `mt-st -f #{device} offline 2>&1`
+    unless ($?.success?())
+        report.error("Mt-st error: #{result}")
         return false
     end
     return true
@@ -723,15 +728,66 @@ def tape_erase(db, report, rewind, offline, label, device)
 end
 
 def tape_write(db, report, rewind, offline, compression, label, device)
-    # TODO: Implement me.
+    if (not (File.chardev?(device) && File.writable?(device)))
+        report.error("Path #{device} is not a character device or not writable.")
+        return false
+    end
+
+    in_db = db.get_first_value("SELECT COUNT (*) FROM tapes WHERE label=\"#{label}\"")
+    if (in_db == 0)
+        report.error("Tape with label #{label} is not in the database.")
+        return false
+    end
+
+    files = db.execute("SELECT path, sha1, mtime, on_disk, files.size FROM files LEFT JOIN links ON " +
+        "links.file_number=files.number LEFT JOIN tapes ON tapes.number=links.tape_number WHERE " +
+        "tapes.label=\"#{label}\"")
+    
+    return false unless (tape_set_block_size(report, device, 8192 * 512))
+    return false unless (tape_set_compression(report, device, compression))
+
+    t_start = Time.now()
+    report.time("Started writing tape", t_start)
+
+    ok, tarball_size = tar_write(report, files, device)
+    return false unless (ok)
+
+    # TODO: Save the tarball size in the tapes table.
+
+    tape_mark_written(db, report, [label])
+
+    return false if (rewind && (not tape_rewind(report, device)))
+    return false if (offline && (not tape_offline(report, device)))
+
+    t_end = Time.now()
+    report.duration("Finished staging tape", t_start, t_end)
+
+    return true
 end
 
 def tape_verify(db, report, rewind, offline, label, device)
+    if (not (File.chardev?(device) && File.readable?(device)))
+        report.error("Path #{device} is not a character device or not writable.")
+        return false
+    end
+
+    in_db = db.get_first_value("SELECT COUNT (*) FROM tapes WHERE label=\"#{label}\"")
+    if (in_db == 0)
+        report.error("Tape with label #{label} is not in the database.")
+        return false
+    end
+
+    return false unless (tape_set_block_size(report, device, 8192 * 512))
+
     # TODO: Implement me.
+
+    return false
 end
 
 def tape_write_verify(db, report, rewind, offline, compression, label, device)
-    # TODO: Implement me.
+    return false unless (tape_write(db, report, rewind, offline, compression, label, device))
+    return false unless (tape_verify(db, report, rewind, offline, label, device))
+    return true
 end
 
 def tape_replace(db, report, old_name, new_name)
@@ -742,6 +798,37 @@ def tape_replace(db, report, old_name, new_name)
     else
         report.error("Cannot rename #{old_name} to #{new_name}, #{new_name} exists in the database.")
     end
+end
+
+def tape_stage(db, report, label, path)
+    if (not (File.directory?(path) && File.writable?(path)))
+        report.error("Path #{path} is not a directory or not writable.")
+        return false
+    end
+
+    in_db = db.get_first_value("SELECT COUNT (*) FROM tapes WHERE label=\"#{label}\"")
+    if (in_db == 0)
+        report.error("Tape with label #{label} is not in the database.")
+        return false
+    end
+
+    files = db.execute("SELECT path, sha1, mtime, on_disk, files.size FROM files LEFT JOIN links ON " +
+        "links.file_number=files.number LEFT JOIN tapes ON tapes.number=links.tape_number WHERE " +
+        "tapes.label=\"#{label}\"")
+    
+    tar_file = "#{path}/#{label}.tar"
+
+    t_start = Time.now()
+    report.time("Started staging tape", t_start)
+
+    ok, tarball_size = tar_write(report, files, tar_file)
+
+    t_end = Time.now()
+    report.duration("Finished staging tape", t_start, t_end)
+
+    # TODO: Save the tarball size in the tapes table.
+
+    return ok
 end
 
 #-----------------------------------------------------------------------------------------------------------------------
@@ -793,6 +880,60 @@ def tar_calc_sizes(files, column)
     end
 
     return files.length(), size, tar_size, overhead
+end
+
+def tar_write(report, files, output)
+    begin
+        # Open manifest and filelist.
+        manifest = File.open('manifest.txt', 'wb')
+        filelist = File.open('filelist.txt', 'wb')
+
+        write_files = []
+        files.each() do |file|
+            if (file[3] == 0)
+                report.warning("File #{file[0]} is excluded because it is marked as not on disk.")
+                next
+            end
+    
+            unless (File.file?(file[0]))
+                report.warning("File #{file[0]} is excluded because it has been deleted.")
+                next
+            end
+    
+            if (File.mtime(file[0]).to_i() != file[2])
+                report.warning("File #{file[0]} is excluded because its mtime does not match the database.")
+                next
+            end
+    
+            relative_filename = file[0].sub(/^\//, '')
+
+            filelist.puts(relative_filename)
+            manifest.puts("#{file[1]}  #{relative_filename}")
+
+            write_files << file
+        end
+
+        manifest.close()
+        filelist.close()
+
+        result = `tar -H pax -b 8192 -cf #{output} manifest.txt -C / -T filelist.txt --totals 2>&1`
+        unless($?.success?())
+            report.error("Tar process returned with error status. Result:\n#{result}")
+            return false, nil
+        end
+
+        written = result.match(/[0-9]+/).to_s().to_i()
+
+        return true, written
+    rescue IOError => e
+        report.error("IOError: #{e.to_s()}")
+        return false, nil
+    ensure
+        manifest.close() unless (manifest.nil?())
+        filelist.close() unless (filelist.nil?())
+        File.delete('manifest.txt')
+        File.delete('filelist.txt')
+    end
 end
 
 #-----------------------------------------------------------------------------------------------------------------------
