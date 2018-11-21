@@ -454,7 +454,7 @@ end
 #-----------------------------------------------------------------------------------------------------------------------
 # File method section
 
-def file_sha1(absolute_path)
+def file_sha1(absolute_path) # HELPER
     sha1 = Digest::SHA1.new()
     File.open(absolute_path, 'rb') do |iostream|
         while (block = iostream.read(4096)) && (block.length() > 0)
@@ -464,7 +464,7 @@ def file_sha1(absolute_path)
     return sha1.hexdigest()
 end
 
-def file_add(db, report, files)
+def file_add(db, report, files) # HELPER
     files.each() do |file|
         if (File.file?(file))
             absolute_path = File.expand_path(file)
@@ -481,7 +481,7 @@ def file_add(db, report, files)
     end
 end
 
-def file_update(db, report, files)
+def file_update(db, report, files) # HELPER
     files.each() do |file|
         if (File.file?(file))
             absolute_path = File.expand_path(file)
@@ -509,7 +509,7 @@ def file_update(db, report, files)
     end
 end
 
-def file_remove(db, report, files)
+def file_remove(db, report, files) # HELPER
     files.each() do |file|
         if (File.file?(file))
             absolute_path = File.expand_path(file)
@@ -530,7 +530,7 @@ def file_remove(db, report, files)
     end
 end
 
-def file_check(db, report, files)
+def file_check(db, report, files) # HELPER
     files.each() do |file|
         if (File.file?(file))
             absolute_path = File.expand_path(file)
@@ -696,9 +696,6 @@ def tape_offline(report, device) # HELPER
     return true
 end
 
-
-
-
 def tape_add(db, report, labels)
     labels.each() do |label|
         in_db = db.get_first_value("SELECT COUNT(*) FROM tapes WHERE label=\"#{label}\"")
@@ -714,6 +711,11 @@ end
 
 def tape_remove(db, report, labels)
     labels.each() do |label|
+        in_db = db.get_first_value("SELECT COUNT(*) FROM tapes WHERE label=\"#{label}\"")
+        if (in_db == 0)
+            report.error("Tape with label #{label} is not in the database.")
+            next
+        end
         count = db.get_first_value("SELECT COUNT (*) FROM links LEFT JOIN tapes ON tapes.number=links.tape_number" +
                                        " WHERE tapes.label=\"#{label}\"")
         if (count == 0)
