@@ -421,10 +421,18 @@ def db_check_schema(db, report, version, db_version)
 end
 
 def db_init(report, version, db_version, async, verbose, wrapper = nil)
+    home_dir = File.expand_path('~')
+    db_dir = "#{home_dir}/.local/share/backuptool"
+    db_file = "#{db_dir}/backuptool.db"
+
+    unless (File.directory?(db_dir))
+        Dir.mkdir(db_dir)
+    end
+
     if (wrapper.nil?)
-        db = SQLite3::Database.new("backuptool.db")
+        db = SQLite3::Database.new(db_file)
     else
-        wrapper.wrap(SQLite3::Database.new("backuptool.db"))
+        wrapper.wrap(SQLite3::Database.new(db_file))
         db = wrapper
     end
 
