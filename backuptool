@@ -809,27 +809,49 @@ def tape_mark_erased(db, report, labels)
 end
 
 def tape_mark_written(db, report, labels)
-    now = Time.new().to_i()
-    query = "UPDATE tapes SET written=#{now} WHERE"
     labels.each() do |label|
-        query += " label=\"#{label}\" OR"
-    end
-    query.chomp!(' OR')
-    db.execute(query)
-    labels.each() do |label|
+        in_db = db.get_first_value("SELECT COUNT(*) FROM tapes WHERE label=\"#{label}\"")
+        if (in_db == 0)
+            report.error("Tape with label #{label} is not in the database.")
+            next
+        end
+
+        in_tapeset = db.get_first_value("SELECT COUNT (*) FROM links LEFT JOIN tapes ON " +
+            "links.tape_number=tapes.number WHERE tapes.label=\"#{label}\"")
+        if (in_tapeset == 0)
+            report.error("Tape with label #{label} is not in a tapeset.")
+            next
+        end
+
+        now = Time.new().to_i()
+        db.execute("UPDATE tapes SET written=#{now} WHERE label=\"#{label}\"")
         report.tape_updated(label)
     end
 end
 
 def tape_mark_verified(db, report, labels)
-    now = Time.new().to_i()
-    query = "UPDATE tapes SET verified=#{now} WHERE"
     labels.each() do |label|
-        query += " label=\"#{label}\" OR"
-    end
-    query.chomp!(' OR')
-    db.execute(query)
-    labels.each() do |label|
+        in_db = db.get_first_value("SELECT COUNT(*) FROM tapes WHERE label=\"#{label}\"")
+        if (in_db == 0)
+            report.error("Tape with label #{label} is not in the database.")
+            next
+        end
+
+        in_tapeset = db.get_first_value("SELECT COUNT (*) FROM links LEFT JOIN tapes ON " +
+            "links.tape_number=tapes.number WHERE tapes.label=\"#{label}\"")
+        if (in_tapeset == 0)
+            report.error("Tape with label #{label} is not in a tapeset.")
+            next
+        end
+
+        is_written = db.get_first_value("SELECT COUNT (*) FROM tapes WHERE label=\"#{label}\" AND written IS NOT NULL")
+        if (is_written == 0)
+            report.error("Tape with label #{label} cannot be verified before it is written.")
+            next
+        end
+
+        now = Time.new().to_i()
+        db.execute("UPDATE tapes SET verified=#{now} WHERE label=\"#{label}\"")
         report.tape_updated(label)
     end
 end
