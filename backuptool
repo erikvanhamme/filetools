@@ -740,7 +740,7 @@ def tape_list(db, report, search_terms)
     unless (search_terms.empty?())
         query += ' WHERE'
         search_terms.each() do |search_term|
-            query += " label LIKE \"#{search_term}%\" OR"
+            query += " label LIKE \"#{search_term}\" OR"
         end
         query.chomp!(' OR')
     end
@@ -1085,11 +1085,10 @@ def tapeset_add(db, report, verbose, quiet, double, triple, incremental, ffd, no
     end
 
     # 4. Check if enough tapes are available.
-    tapes_required = tapes_needed * sets
     free_tapes = db.execute('SELECT * FROM tapes WHERE tapeset_idx=-1 ORDER BY label ASC')
     tapes_required = tapes_needed * sets
     if (free_tapes.length() < tapes_required)
-        report.error("Unsufficient free tapes. Available: #{free_tapes.length()} Required: #{tapes_required}")
+        report.error("Insufficient free tapes. Available: #{free_tapes.length()} Required: #{tapes_required}")
         return
     end
 
@@ -1182,8 +1181,8 @@ def tapeset_list(db, report, search_terms)
     query = 'SELECT name FROM tapesets'
     unless (search_terms.empty?())
         query += ' WHERE'
-        searchterms.each() do |search_term|
-            query += " name LIKE \"#{search_term}%\" OR"
+        search_terms.each() do |search_term|
+            query += " name LIKE \"#{search_term}\" OR"
         end
         query.chomp!(' OR')
     end
