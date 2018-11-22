@@ -784,7 +784,7 @@ def tape_info(db, report, labels, verbose)
         if ((tape[7].nil?()) || (tape[10].nil?()))
             overhead = nil
         else
-            overhead = tape[10] - tape[7]
+            overhead = tape[10] - tape[9]
         end
 
         w = tape[4].nil? ? nil : Time.at(tape[4])
@@ -813,7 +813,7 @@ def tape_manifest(db, report, label)
 end
 
 def tape_mark_erased(db, report, labels)
-    query = "UPDATE tapes SET written=NULL, verified=NULL WHERE"
+    query = "UPDATE tapes SET written=NULL, verified=NULL, tape_files=NULL, tape_size=NULL, tar_size=NULL WHERE"
     labels.each() do |label|
         query += " label=\"#{label}\" OR"
     end
@@ -1174,8 +1174,8 @@ def tapeset_remove(db, report, names)
         report.tapeset_removed(tapeset)
         # 2. Update tapes.
         tapes.each() do |tape|
-            db.execute("UPDATE tapes SET tapeset_idx=-1, written=NULL, verified=NULL, ts_files=NULL, ts_size=NULL " +
-                "WHERE number=#{tape[0]}")
+            db.execute("UPDATE tapes SET tapeset_idx=-1, written=NULL, verified=NULL, ts_files=NULL, ts_size=NULL, " +
+                "tape_files=NULL, tape_size=NULL, tar_size=NULL WHERE number=#{tape[0]}")
             report.tape_updated(tape[1])
         end
         # 3. Remove files.
