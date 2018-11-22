@@ -761,9 +761,9 @@ def tape_list(db, report, search_terms)
 end
 
 def tape_info(db, report, labels, verbose)
-    query = 'SELECT DISTINCT tapes.number, tapes.label, tapes.size, tapes.tapeset_idx, tapesets.name, tapes.written,' +
-        ' tapes.verified FROM tapes LEFT JOIN links ON links.tape_number=tapes.number LEFT JOIN tapesets ON' +
-        ' tapesets.number=links.tapeset_number'
+    query = 'SELECT DISTINCT tapes.number, tapes.label, tapes.size, tapes.tapeset_idx, tapes.written, tapes.verified,' +
+        ' tapes.ts_files, tapes.ts_size, tapes.tape_files, tapes.tape_size, tapes.tar_size, tapesets.name FROM tapes' +
+        ' LEFT JOIN links ON links.tape_number=tapes.number LEFT JOIN tapesets ON tapesets.number=links.tapeset_number'
     unless (labels.empty?())
         query += ' WHERE'
         labels.each() do |label|
@@ -775,22 +775,30 @@ def tape_info(db, report, labels, verbose)
 
     tapes = db.execute(query)
     tapes.collect!() do |tape|
-        files, size, tar_size, overhead = tape_sizes(db, tape[0])
+        capacity = tape[2] / 1000000000
+        if (tape[10].nil?())
+            used = nil
+        else
+            used = "#{((tape[10].to_f() / tape[2].to_f()) * 100.0).round(1)} %"
+        end
+        if ((tape[7].nil?()) || (tape[10].nil?()))
+            overhead = nil
+        else
+            overhead = tape[10] - tape[7]
+        end
 
-        used = (tar_size.to_f() / (tape[2].to_f() * 0.99)) * 100
+        w = tape[4].nil? ? nil : Time.at(tape[4])
+        v = tape[5].nil? ? nil : Time.at(tape[5])
 
-        w = tape[5].nil? ? nil : Time.at(tape[5])
-        v = tape[6].nil? ? nil : Time.at(tape[6])
-
-        {:label => tape[1], :files => files, :size => size, :tar_size => tar_size, :overhead => overhead,
-         :capacity => tape[2], :usage => "#{used.round(1)} %", :ts_idx => tape[3], :tapeset => tape[4],
-         :written => w, :verified => v}
+        {:label => tape[1], :tapeset => tape[11], :ts_idx => tape[3], :capacity => "#{capacity} GB", 
+            :used => used, :files => tape[6], :size => tape[7], :tape_files => tape[8], 
+            :tape_size => tape[9], :tar_size => tape[10], :overhead => overhead, :written => w, :verified => v}
     end
     if (verbose)
-        report.table(tapes, [:label, :files, :size, :tar_size, :overhead, :capacity, :usage, :ts_idx, :tapeset,
-                             :written, :verified])
+        report.table(tapes, [:label, :capacity, :used, :tapeset, :ts_idx, :files, :size, :tape_files, :tape_size, 
+            :tar_size, :overhead, :written, :verified])
     else
-        report.table(tapes, [:label, :files, :usage, :tapeset, :written, :verified])
+        report.table(tapes, [:label, :capacity, :used, :tapeset, :ts_idx, :written, :verified])
     end
 end
 
@@ -872,7 +880,7 @@ def tape_erase(db, report, rewind, offline, label, device)
         return false
     end
 
-    # TODO: also clear tape_files, tape_size and tar_size here.
+    db.execute("UPDATE tapes SET tape_files=NULL, tape_size=NULL, tar_size=NULL WHERE label=\"#{label}\"")
 
     tape_mark_erased(db, report, [label])
 
@@ -897,7 +905,7 @@ def tape_write(db, report, rewind, offline, compression, label, device)
     t_start = Time.now()
     report.time("Started writing tape", t_start)
 
-    ok = tar_write(db, report, files, device)
+    ok = tar_write(db, report, files, device, label)
     return false unless (ok)
 
     tape_mark_written(db, report, [label])
@@ -945,7 +953,8 @@ end
 def tape_replace(db, report, old_name, new_name)
     in_db = db.get_first_value("SELECT COUNT (*) FROM tapes WHERE label=\"#{new_name}\"")
     if (in_db == 0)
-        db.execute("UPDATE tapes SET label=\"#{new_name}\", written=NULL, verified=NULL WHERE label=\"#{old_name}\"")
+        db.execute("UPDATE tapes SET label=\"#{new_name}\", written=NULL, verified=NULL, tape_files=NULL, " +
+            "tape_size=NULL, tar_size=NULL WHERE label=\"#{old_name}\"")
         report.tape_updated(old_name)
     else
         report.error("Cannot rename #{old_name} to #{new_name}, #{new_name} exists in the database.")
@@ -973,7 +982,7 @@ def tape_stage(db, report, label, path)
     t_start = Time.now()
     report.time("Started staging tape", t_start)
 
-    ok = tar_write(db, report, files, tar_file)
+    ok = tar_write(db, report, files, tar_file, label)
     report.tape_updated(label)
 
     t_end = Time.now()
@@ -1065,9 +1074,11 @@ def tapeset_add(db, report, verbose, quiet, double, triple, incremental, ffd, no
     # Prepare.
     tape_contents = []
     tape_bytes_left = []
+    tape_bytes = []
     for i in 0..(tapes_needed - 1)
         tape_contents[i] = []
         tape_bytes_left[i] = bytes_per_tape
+        tape_bytes[i] = 0
     end
 
     # Actual bin packing of files.
@@ -1081,6 +1092,7 @@ def tapeset_add(db, report, verbose, quiet, double, triple, incremental, ffd, no
             if (tape_bytes_left[j] > (file_size + overhead + 1024)) # Add 1024 bytes for the tarball footer.
                 tape_contents[j] << files[i]
                 tape_bytes_left[j] -= (file_size + overhead)
+                tape_bytes[j] += file_size
                 stored = true
                 break
             end
@@ -1103,15 +1115,17 @@ def tapeset_add(db, report, verbose, quiet, double, triple, incremental, ffd, no
     tape_index = 0
     tapes_used = []
     for set in 0..(sets - 1)
-        # TODO: Also set created in tapesets table here.
-        db.execute("INSERT INTO tapesets (name, tape_count) VALUES (\"#{tapeset_names[set]}\", #{tapes_needed})")
+        now = Time.now()
+        db.execute("INSERT INTO tapesets (name, tape_count, created) VALUES (\"#{tapeset_names[set]}\", " +
+            "#{tapes_needed}, #{now.to_i()})")
         report.tapeset_added(tapeset_names[set])
         set_number = db.get_first_value("SELECT number FROM tapesets WHERE name=\"#{tapeset_names[set]}\"")
 
         for tape in 0..(tapes_needed - 1)
             tape_index_in_set = tape_index % tapes_needed
-            # TODO: Update also ts_files and ts_size here.
-            db.execute("UPDATE tapes SET tapeset_idx=#{tape_index_in_set} WHERE label=\"#{free_tapes[tape_index][1]}\"")
+            db.execute("UPDATE tapes SET tapeset_idx=#{tape_index_in_set}, " +
+                "ts_files=#{tape_contents[tape_index_in_set].length()}, " + 
+                "ts_size=#{tape_bytes[tape_index_in_set]} WHERE label=\"#{free_tapes[tape_index][1]}\"")
             report.tape_updated(free_tapes[tape_index][1])
 
             tape_contents[tape_index_in_set].each() do |file|
@@ -1160,8 +1174,8 @@ def tapeset_remove(db, report, names)
         report.tapeset_removed(tapeset)
         # 2. Update tapes.
         tapes.each() do |tape|
-            # TODO: also update ts_files and ts_size here.
-            db.execute("UPDATE tapes SET tapeset_idx=-1, written=NULL, verified=NULL WHERE number=#{tape[0]}")
+            db.execute("UPDATE tapes SET tapeset_idx=-1, written=NULL, verified=NULL, ts_files=NULL, ts_size=NULL " +
+                "WHERE number=#{tape[0]}")
             report.tape_updated(tape[1])
         end
         # 3. Remove files.
@@ -1205,8 +1219,9 @@ def tapeset_list(db, report, search_terms)
 end
 
 def tapeset_info(db, report, names)
-    query = 'SELECT DISTINCT tapesets.name, tapesets.tape_count, tapes.label, tapes.tapeset_idx FROM tapesets LEFT' +
-        ' JOIN links ON links.tapeset_number=tapesets.number LEFT JOIN tapes ON tapes.number=links.tape_number'
+    query = 'SELECT DISTINCT tapesets.name, tapesets.tape_count, tapes.label, tapes.tapeset_idx, tapesets.created ' +
+        'FROM tapesets LEFT JOIN links ON links.tapeset_number=tapesets.number LEFT JOIN tapes ON ' +
+        'tapes.number=links.tape_number'
     unless (names.empty?())
         query += ' WHERE'
         names.each() do |name|
@@ -1218,9 +1233,10 @@ def tapeset_info(db, report, names)
 
     data = db.execute(query)
     data.collect!() do |row|
-        {:name => row[0], :tape => row[2], :volume => "#{(row[3] + 1)} / #{row[1]}"}
+        c = row[4].nil?() ? nil : Time.at(row[4])
+        {:name => row[0], :tape => row[2], :volume => "#{(row[3] + 1)} / #{row[1]}", :created => c}
     end
-    report.table(data, [:name, :tape, :volume])
+    report.table(data, [:name, :tape, :volume, :created])
 end
 
 #-----------------------------------------------------------------------------------------------------------------------
@@ -1251,12 +1267,13 @@ def tar_calc_sizes(files, column) # TODO: Delete me.
     return files.length(), size, tar_size, overhead
 end
 
-def tar_write(db, report, files, output)
+def tar_write(db, report, files, output, label)
     begin
         # Open manifest and filelist.
         manifest = File.open('manifest.txt', 'wb')
         filelist = File.open('filelist.txt', 'wb')
 
+        write_size = 0
         write_files = []
         files.each() do |file|
             if (file[3] == 0)
@@ -1280,6 +1297,7 @@ def tar_write(db, report, files, output)
             manifest.puts("#{file[1]}  #{relative_filename}")
 
             write_files << file
+            write_size += file[4]
         end
 
         manifest.close()
@@ -1293,7 +1311,8 @@ def tar_write(db, report, files, output)
 
         written = result.match(/[0-9]+/).to_s().to_i()
 
-        # TODO: Update the tapes table here with: tape_files, tape_size, tar_size
+        db.execute("UPDATE tapes SET tape_files=#{write_files.length()}, tape_size=#{write_size}, " +
+            "tar_size=#{written} WHERE label=\"#{label}\"")
 
         return true
     rescue IOError => e
