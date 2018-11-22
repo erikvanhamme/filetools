@@ -345,11 +345,13 @@ end
 
 def db_create_tapes_table(db)
     db.execute('CREATE TABLE IF NOT EXISTS tapes(number INTEGER PRIMARY KEY, label TEXT, size INTEGER, tapeset_idx' +
-                   ' INTEGER, written INTEGER, verified INTEGER)')
+                   ' INTEGER, written INTEGER, verified INTEGER, ts_files INTEGER, ts_size INTEGER, tape_files' +
+                   ' INTEGER, tape_size INTEGER, tar_size INTEGER)')
 end
 
 def db_create_tapesets_table(db)
-    db.execute('CREATE TABLE IF NOT EXISTS tapesets(number INTEGER PRIMARY KEY, name TEXT UNIQUE, tape_count INTEGER)')
+    db.execute('CREATE TABLE IF NOT EXISTS tapesets(number INTEGER PRIMARY KEY, name TEXT UNIQUE, tape_count INTEGER,' +
+                   ' created INTEGER)')
 end
 
 def db_create_links_table(db)
@@ -385,7 +387,13 @@ def db_increment_schema(db, current, report)
         db.execute('DROP TABLE tapes_v1')
     end
     if (current == 2)
-        # TODO: Handle schema update from V2 to V3 here.
+        db.execute('ALTER TABLE tapes ADD COLUMN ts_files INTEGER')
+        db.execute('ALTER TABLE tapes ADD COLUMN ts_size INTEGER')
+        db.execute('ALTER TABLE tapes ADD COLUMN tape_files INTEGER')
+        db.execute('ALTER TABLE tapes ADD COLUMN tape_size INTEGER')
+        db.execute('ALTER TABLE tapes ADD COLUMN tar_size INTEGER')
+
+        db.execute('ALTER TABLE tapesets ADD COLUMN created INTEGER')
     end
     current += 1
     db.execute("UPDATE version SET db_version=#{current}")
@@ -864,6 +872,8 @@ def tape_erase(db, report, rewind, offline, label, device)
         return false
     end
 
+    # TODO: also clear tape_files, tape_size and tar_size here.
+
     tape_mark_erased(db, report, [label])
 
     return false if (rewind && (not tape_rewind(report, device)))
@@ -887,10 +897,8 @@ def tape_write(db, report, rewind, offline, compression, label, device)
     t_start = Time.now()
     report.time("Started writing tape", t_start)
 
-    ok, tarball_size = tar_write(report, files, device)
+    ok = tar_write(db, report, files, device)
     return false unless (ok)
-
-    # TODO: Save the tarball size in the tapes table.
 
     tape_mark_written(db, report, [label])
 
@@ -965,12 +973,11 @@ def tape_stage(db, report, label, path)
     t_start = Time.now()
     report.time("Started staging tape", t_start)
 
-    ok, tarball_size = tar_write(report, files, tar_file)
+    ok = tar_write(db, report, files, tar_file)
+    report.tape_updated(label)
 
     t_end = Time.now()
     report.duration("Finished staging tape", t_start, t_end)
-
-    # TODO: Save the tarball size in the tapes table.
 
     return ok
 end
@@ -1096,12 +1103,14 @@ def tapeset_add(db, report, verbose, quiet, double, triple, incremental, ffd, no
     tape_index = 0
     tapes_used = []
     for set in 0..(sets - 1)
+        # TODO: Also set created in tapesets table here.
         db.execute("INSERT INTO tapesets (name, tape_count) VALUES (\"#{tapeset_names[set]}\", #{tapes_needed})")
         report.tapeset_added(tapeset_names[set])
         set_number = db.get_first_value("SELECT number FROM tapesets WHERE name=\"#{tapeset_names[set]}\"")
 
         for tape in 0..(tapes_needed - 1)
             tape_index_in_set = tape_index % tapes_needed
+            # TODO: Update also ts_files and ts_size here.
             db.execute("UPDATE tapes SET tapeset_idx=#{tape_index_in_set} WHERE label=\"#{free_tapes[tape_index][1]}\"")
             report.tape_updated(free_tapes[tape_index][1])
 
@@ -1151,6 +1160,7 @@ def tapeset_remove(db, report, names)
         report.tapeset_removed(tapeset)
         # 2. Update tapes.
         tapes.each() do |tape|
+            # TODO: also update ts_files and ts_size here.
             db.execute("UPDATE tapes SET tapeset_idx=-1, written=NULL, verified=NULL WHERE number=#{tape[0]}")
             report.tape_updated(tape[1])
         end
@@ -1241,7 +1251,7 @@ def tar_calc_sizes(files, column) # TODO: Delete me.
     return files.length(), size, tar_size, overhead
 end
 
-def tar_write(report, files, output)
+def tar_write(db, report, files, output)
     begin
         # Open manifest and filelist.
         manifest = File.open('manifest.txt', 'wb')
@@ -1283,7 +1293,9 @@ def tar_write(report, files, output)
 
         written = result.match(/[0-9]+/).to_s().to_i()
 
-        return true, written
+        # TODO: Update the tapes table here with: tape_files, tape_size, tar_size
+
+        return true
     rescue IOError => e
         report.error("IOError: #{e.to_s()}")
         return false, nil
@@ -1764,7 +1776,7 @@ end
 begin
     # Initialize variables
     version = 2
-    db_version = 2
+    db_version = 3
     report = Report.new()
     db = nil
 
