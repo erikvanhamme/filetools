@@ -1403,7 +1403,9 @@ def tar_verify(report, input)
                             elsif (x[:link] == '0') # USTAR file header.
                                 header = x
 
-                                filename = header[:prefix].to_s() + header[:name]
+                                filename = nil
+                                filename += header[:prefix].to_s() unless (header[:prefix].nil?())
+                                filename += header[:name] unless (header[:name].nil?())
                                 report.msg("Verify file #{filename}")
 
                                 if (filename == 'manifest.txt')
