@@ -659,14 +659,6 @@ def tape_size(label) # HELPER
     return size
 end
 
-def tape_sizes(db, tape_number) # HELPER
-    query = "SELECT files.size FROM links LEFT JOIN files ON links.file_number = files.number WHERE " +
-        "links.tape_number=#{tape_number}"
-    files = db.execute(query)
-
-    return tar_calc_sizes(files, 0)
-end
-
 def tape_set_compression(report, device, compression) # HELPER
     if (compression)
         report.msg('Enabling compression.')
@@ -1242,31 +1234,6 @@ end
 #-----------------------------------------------------------------------------------------------------------------------
 # Tar method section
 
-def tar_calc_sizes(files, column) # TODO: Delete me.
-    size = 0
-    overhead = 0
-    files.each() do |file|
-        size += file[column]
-        overhead += (512 * 3) + (512 - (file[column] % 512))
-    end
-    tar_size_no_footer = size + overhead
-    modulo = tar_size_no_footer % (8192 * 512)
-    if (modulo < 1024)
-        tar_footer_size = (8192 * 512) + modulo
-    else
-        tar_footer_size = (8192 * 512) - modulo
-    end
-    tar_size = tar_size_no_footer + tar_footer_size
-    overhead += tar_footer_size
-
-    if (files.length() == 0)
-        tar_size = 0
-        overhead = 0
-    end
-
-    return files.length(), size, tar_size, overhead
-end
-
 def tar_write(db, report, files, output, label)
     begin
         # Open manifest and filelist.
@@ -1372,6 +1339,7 @@ def tar_verify(report, input)
 
         state = :scan
         ext_header = nil
+        ext_header_data = ''
         ext_header_file_size = nil
         header = nil
         processed = 0
@@ -1403,7 +1371,7 @@ def tar_verify(report, input)
                             elsif (x[:link] == '0') # USTAR file header.
                                 header = x
 
-                                filename = nil
+                                filename = ''
                                 filename += header[:prefix].to_s() unless (header[:prefix].nil?())
                                 filename += header[:name] unless (header[:name].nil?())
                                 report.msg("Verify file #{filename}")
@@ -1438,8 +1406,18 @@ def tar_verify(report, input)
                             end
                         end
                     when :ext
+                        ext_header_data += block
                         processed += 512
                         if (processed >= ext_header[:size])
+                            entries = ext_header_data.strip().split("\n")
+                            sha1 = nil
+                            entries.each() do |entry|
+                                if (entry =~ /[0-9]+ size=[0-9]+/)
+                                    numbers = entry.scan(/[0-9]+/)
+                                    ext_header_file_size = numbers.last().to_i()
+                                end
+                            end
+                            ext_header_data = ''
                             state = :scan
                         end
                     when :file
