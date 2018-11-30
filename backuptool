@@ -1310,22 +1310,22 @@ end
 
 def tar_block_header_parse(block)
     return {
-        :name => block[0..99].strip!(),
-        :mode => block[100..107].strip!(),
-        :uid => block[108..115].strip!(),
-        :gid => block[116..123].strip!(),
-        :size => block[124..135].strip!().to_i(8),
-        :mtime => block[136..147].strip!().to_i(8),
-        :checksum => block[148..155].strip!().to_i(8),
+        :name => block[0..99].strip(),
+        :mode => block[100..107].strip(),
+        :uid => block[108..115].strip(),
+        :gid => block[116..123].strip(),
+        :size => block[124..135].strip().to_i(8),
+        :mtime => block[136..147].strip().to_i(8),
+        :checksum => block[148..155].strip().to_i(8),
         :link => block[156],
-        :link_name => block[157..256].strip!(),
-        :ustar => block[257..262].strip!(),
+        :link_name => block[157..256].strip(),
+        :ustar => block[257..262].strip(),
         :ustar_version => block[263..264].to_i(8),
-        :owner_user => block[265..296].strip!(),
-        :owner_group => block[297..328].strip!(),
-        :dev_major_num => block[329..336].strip!().to_i(8),
-        :dev_minor_num => block[337..344].strip!().to_i(8),
-        :name_prefix => block[345..499].strip!()
+        :owner_user => block[265..296].strip(),
+        :owner_group => block[297..328].strip(),
+        :dev_major_num => block[329..336].strip().to_i(8),
+        :dev_minor_num => block[337..344].strip().to_i(8),
+        :name_prefix => block[345..499].strip()
     }
 end
 
@@ -1341,6 +1341,7 @@ def tar_verify(report, input)
         ext_header = nil
         ext_header_data = ''
         ext_header_file_size = nil
+        ext_header_file_name = nil
         header = nil
         processed = 0
         digest = nil
@@ -1366,14 +1367,19 @@ def tar_verify(report, input)
                             if (x[:link] == 'x') # PAX extended header.
                                 ext_header = x
                                 ext_header_file_size = nil
+                                ext_header_file_name = nil
                                 processed = 0
                                 state = :ext
                             elsif (x[:link] == '0') # USTAR file header.
                                 header = x
 
                                 filename = ''
-                                filename += header[:prefix].to_s() unless (header[:prefix].nil?())
-                                filename += header[:name] unless (header[:name].nil?())
+                                if (ext_header_file_name.nil?())
+                                    filename += header[:prefix].to_s() unless (header[:prefix].nil?())
+                                    filename += header[:name] unless (header[:name].nil?())
+                                else
+                                    filename = ext_header_file_name
+                                end
                                 report.msg("Verify file #{filename}")
 
                                 if (filename == 'manifest.txt')
@@ -1415,6 +1421,9 @@ def tar_verify(report, input)
                                 if (entry =~ /[0-9]+ size=[0-9]+/)
                                     numbers = entry.scan(/[0-9]+/)
                                     ext_header_file_size = numbers.last().to_i()
+                                end
+                                if (entry =~ /[0-9]+ path=.*/)
+                                    ext_header_file_name = entry.scan(/\=.*/).last().sub(/\=/, '')
                                 end
                             end
                             ext_header_data = ''
