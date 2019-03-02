@@ -802,7 +802,7 @@ def tape_info(db, report, labels, verbose)
         if (tape[10].nil?())
             used = nil
         else
-            used = "#{((tape[10].to_f() / tape[2].to_f()) * 100.0).round(1)} %"
+            used = "#{((tape[10].to_f() / (tape[2].to_f() * 0.95)) * 100.0).round(1)} %"
         end
         if ((tape[7].nil?()) || (tape[10].nil?()))
             overhead = nil
