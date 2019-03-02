@@ -253,7 +253,7 @@ end
 class Report < ReportBase
     def initialize()
         @r = { :f_add => 0, :f_up => 0, :f_rm => 0, :t_add => 0, :t_up => 0, :t_rm => 0, :s_add => 0, :s_up => 0,
-               :s_rm => 0, :l_add => 0, :l_rm => 0 }
+               :s_rm => 0, :l_add => 0, :l_rm => 0, :p_add => 0, :p_rm => 0}
     end
 
     def file_added(absolute_path)
@@ -299,6 +299,16 @@ class Report < ReportBase
     def tapeset_removed(name)
         @r[:s_rm] += 1
         puts("Tapeset #{name} removed.".color(CC::BLUE)) if (@verbose)
+    end
+
+    def tapeset_path_added(name, path)
+        @r[:p_add] += 1
+        puts("Path #{path} added to tapeset #{name}.")
+    end
+
+    def tapeset_path_removed(name, path)
+        @r[:p_rm] += 1
+        puts("Path #{path} removed from tapeset #{name}.")
     end
 
     def link_added(path, label, tapeset)
@@ -354,6 +364,10 @@ def db_create_tapesets_table(db)
                    ' created INTEGER)')
 end
 
+def db_create_tapeset_paths_table(db)
+    db.execute('CREATE TABLE IF NOT EXISTS tapeset_paths(tapeset_number INTEGER NOT_NULL, path TEXT NOT NULL)')
+end
+
 def db_create_links_table(db)
     db.execute('CREATE TABLE IF NOT EXISTS links(file_number INTEGER, tape_number INTEGER, tapeset_number INTEGER)')
 end
@@ -363,6 +377,7 @@ def db_create_schema(db, report, version, db_version)
     db_create_files_table(db)
     db_create_tapes_table(db)
     db_create_tapesets_table(db)
+    db_create_tapeset_paths_table(db)
     db_create_links_table(db)
     report.warning('New database created.')
 end
@@ -394,6 +409,9 @@ def db_increment_schema(db, current, report)
         db.execute('ALTER TABLE tapes ADD COLUMN tar_size INTEGER')
 
         db.execute('ALTER TABLE tapesets ADD COLUMN created INTEGER')
+    end
+    if (current == 3)
+        db_create_tapeset_paths_table(db)
     end
     current += 1
     db.execute("UPDATE version SET db_version=#{current}")
@@ -458,9 +476,10 @@ def db_init(report, version, db_version, async, verbose, wrapper = nil)
     files = db.get_first_value('SELECT COUNT(*) FROM files')
     tapes = db.get_first_value('SELECT COUNT(*) FROM tapes')
     tapesets = db.get_first_value('SELECT COUNT(*) FROM tapesets')
+    tapeset_paths = db.get_first_value('SELECT COUNT(*) FROM tapeset_paths')
     links = db.get_first_value('SELECT COUNT(*) FROM links')
 
-    data = [{files: files, tapes: tapes, tapesets: tapesets, links: links}]
+    data = [{files: files, tapes: tapes, tapesets: tapesets, tapeset_paths: tapeset_paths, links: links}]
     report.table(data, data[0].keys) if (verbose)
     report.msg('Database loaded.')
 
@@ -659,47 +678,59 @@ def tape_size(label) # HELPER
     return size
 end
 
-def tape_set_compression(report, device, compression) # HELPER
+def tape_set_compression(report, device, compression, simulate) # HELPER
     if (compression)
         report.msg('Enabling compression.')
-        result = `mt-st -f #{device} compression 1 2>&1`
+        unless (simulate)
+            result = `mt-st -f #{device} compression 1 2>&1`
+        end
     else
         report.msg('Disabling compression.')
-        result = `mt-st -f #{device} compression 0 2>&1`
+        unless (simulate)
+            result = `mt-st -f #{device} compression 0 2>&1`
+        end
     end
-    unless ($?.success?())
-        report.error("mt-st error: #{result}")
-        return false
+    unless (simulate)
+        unless ($?.success?())
+            report.error("mt-st error: #{result}")
+            return false
+        end
     end
     return true
 end
 
-def tape_set_block_size(report, device, block_size) # HELPER
+def tape_set_block_size(report, device, block_size, simulate) # HELPER
     report.msg('Setting block size.')
-    result = `mt-st -f #{device} setblk #{block_size} 2>&1`
-    unless ($?.success?())
-        report.error("mt-st error: #{result}")
-        return false
+    unless (simulate)
+        result = `mt-st -f #{device} setblk #{block_size} 2>&1`
+        unless ($?.success?())
+            report.error("mt-st error: #{result}")
+            return false
+        end
     end
     return true
 end
 
-def tape_rewind(report, device) # HELPER
+def tape_rewind(report, device, simulate) # HELPER
     report.msg('Rewinding tape.')
-    result = `mt-st -f #{device} rewind 2>&1`
-    unless ($?.success?())
-        report.error("Mt-st error: #{result}")
-        return false
+    unless (simulate)
+        result = `mt-st -f #{device} rewind 2>&1`
+        unless ($?.success?())
+            report.error("Mt-st error: #{result}")
+            return false
+        end
     end
     return true
 end
 
-def tape_offline(report, device) # HELPER
+def tape_offline(report, device, simulate) # HELPER
     report.msg('Offlining tape.')
-    result = `mt-st -f #{device} offline 2>&1`
-    unless ($?.success?())
-        report.error("Mt-st error: #{result}")
-        return false
+    unless (simulate)
+        result = `mt-st -f #{device} offline 2>&1`
+        unless ($?.success?())
+            report.error("Mt-st error: #{result}")
+            return false
+        end
     end
     return true
 end
@@ -771,7 +802,7 @@ def tape_info(db, report, labels, verbose)
         if (tape[10].nil?())
             used = nil
         else
-            used = "#{((tape[10].to_f() / tape[2].to_f()) * 100.0).round(1)} %"
+            used = "#{((tape[10].to_f() / (tape[2].to_f() * 0.95)) * 100.0).round(1)} %"
         end
         if ((tape[7].nil?()) || (tape[10].nil?()))
             overhead = nil
@@ -864,23 +895,25 @@ def tape_mark_verified(db, report, labels)
     end
 end
 
-def tape_erase(db, report, rewind, offline, label, device)
+def tape_erase(db, report, rewind, offline, simulate, label, device)
     report.msg('Erasing tape.')
-    output = `mt-st -f #{device} erase`
-    unless (output == '')
-        report.error("Mt-st error: #{output}")
-        return false
+    unless (simulate)
+        output = `mt-st -f #{device} erase`
+        unless (output == '')
+            report.error("Mt-st error: #{output}")
+            return false
+        end
     end
 
     db.execute("UPDATE tapes SET tape_files=NULL, tape_size=NULL, tar_size=NULL WHERE label=\"#{label}\"")
 
     tape_mark_erased(db, report, [label])
 
-    return false if (rewind && (not tape_rewind(report, device)))
-    return false if (offline && (not tape_offline(report, device)))
+    return false if (rewind && (not tape_rewind(report, device, simulate)))
+    return false if (offline && (not tape_offline(report, device, simulate)))
 end
 
-def tape_write(db, report, rewind, offline, compression, label, device)
+def tape_write(db, report, rewind, offline, compression, simulate, label, device)
     in_db = db.get_first_value("SELECT COUNT (*) FROM tapes WHERE label=\"#{label}\"")
     if (in_db == 0)
         report.error("Tape with label #{label} is not in the database.")
@@ -891,44 +924,46 @@ def tape_write(db, report, rewind, offline, compression, label, device)
         "links.file_number=files.number LEFT JOIN tapes ON tapes.number=links.tape_number WHERE " +
         "tapes.label=\"#{label}\"")
     
-    return false unless (tape_set_block_size(report, device, 8192 * 512))
-    return false unless (tape_set_compression(report, device, compression))
+    return false unless (tape_set_block_size(report, device, 8192 * 512, simulate))
+    return false unless (tape_set_compression(report, device, compression, simulate))
 
     t_start = Time.now()
     report.time("Started writing tape", t_start)
 
-    ok = tar_write(db, report, files, device, label)
+    ok = tar_write(db, report, files, device, label, simulate)
     return false unless (ok)
 
     tape_mark_written(db, report, [label])
 
-    return false if (rewind && (not tape_rewind(report, device)))
-    return false if (offline && (not tape_offline(report, device)))
+    return false if (rewind && (not tape_rewind(report, device, simulate)))
+    return false if (offline && (not tape_offline(report, device, simulate)))
 
     t_end = Time.now()
-    report.duration("Finished staging tape", t_start, t_end)
+    report.duration("Finished writing tape", t_start, t_end)
 
     return true
 end
 
-def tape_verify(db, report, rewind, offline, label, device)
+def tape_verify(db, report, rewind, offline, simulate, label, device)
     in_db = db.get_first_value("SELECT COUNT (*) FROM tapes WHERE label=\"#{label}\"")
     if (in_db == 0)
         report.error("Tape with label #{label} is not in the database.")
         return false
     end
 
-    return false unless (tape_set_block_size(report, device, 8192 * 512))
+    return false unless (tape_set_block_size(report, device, 8192 * 512, simulate))
 
     t_start = Time.now()
     report.time("Started verifying tape", t_start)
 
-    return false unless (tar_verify(report, device))
+    unless (simulate)
+        return false unless (tar_verify(report, device))
+    end
 
     tape_mark_verified(db, report, [label])
 
-    return false if (rewind && (not tape_rewind(report, device)))
-    return false if (offline && (not tape_offline(report, device)))
+    return false if (rewind && (not tape_rewind(report, device, simulate)))
+    return false if (offline && (not tape_offline(report, device, simulate)))
 
     t_end = Time.now()
     report.duration("Finished verifying tape", t_start, t_end)
@@ -936,9 +971,9 @@ def tape_verify(db, report, rewind, offline, label, device)
     return true
 end
 
-def tape_write_verify(db, report, rewind, offline, compression, label, device)
-    return false unless (tape_write(db, report, rewind, offline, compression, label, device))
-    return false unless (tape_verify(db, report, rewind, offline, label, device))
+def tape_write_verify(db, report, rewind, offline, compression, simulate, label, device)
+    return false unless (tape_write(db, report, rewind, offline, compression, simulate, label, device))
+    return false unless (tape_verify(db, report, rewind, offline, simulate, label, device))
     return true
 end
 
@@ -986,7 +1021,7 @@ end
 #-----------------------------------------------------------------------------------------------------------------------
 # Tapeset method section
 
-def tapeset_add(db, report, verbose, quiet, double, triple, incremental, ffd, no_tape_level, name, paths)
+def tapeset_add(db, report, verbose, quiet, double, triple, ffd, no_tape_level, name, paths)
     sets = triple ? 3 : double ? 2 : 1
 
     # 1. Assemble the tapeset names.
@@ -1017,22 +1052,18 @@ def tapeset_add(db, report, verbose, quiet, double, triple, incremental, ffd, no
 
     # 2. File selection.
     files = nil
-    if (incremental)
-        # TODO: Implement incremental mode.
-    else
-        query = 'SELECT * FROM files WHERE ('
-        paths.each() do |item|
-            query += "path LIKE \"#{item}%\" OR "
-        end
-        query.chomp!(' OR ')
-        query += ') AND (on_disk=1)'
-        if (ffd)
-            query += ' ORDER BY size DESC'
-        else
-            query += ' ORDER BY path ASC'
-        end
-        files = db.execute(query)
+    query = 'SELECT * FROM files WHERE ('
+    paths.each() do |item|
+        query += "path LIKE \"#{item}%\" OR "
     end
+    query.chomp!(' OR ')
+    query += ') AND (on_disk=1)'
+    if (ffd)
+        query += ' ORDER BY size DESC'
+    else
+        query += ' ORDER BY path ASC'
+    end
+    files = db.execute(query)
     if (files.length() == 0)
         report.error("No files matched the selection criteria.")
         return
@@ -1049,8 +1080,8 @@ def tapeset_add(db, report, verbose, quiet, double, triple, incremental, ffd, no
     # TODO: This is bad, find a way to deal with tapes of different sizes.
     first_tape_size = db.get_first_value('SELECT size FROM tapes')
 
-    # Reduce tape size with 1% to make room for TAR overhead.
-    first_tape_size = (0.99 * first_tape_size).to_i()
+    # Reduce tape size with 5% to make room for overheads.
+    first_tape_size = (0.95 * first_tape_size).to_i()
 
     # Get smallest integer number of tapes that will fit the data.
     tapes_needed = (accumulator.to_f() / first_tape_size).ceil()
@@ -1130,10 +1161,138 @@ def tapeset_add(db, report, verbose, quiet, double, triple, incremental, ffd, no
 
             tape_index += 1
         end
+
+        paths.each do |path|
+            db.execute("INSERT INTO tapeset_paths (tapeset_number, path) VALUES (#{set_number}, \"#{path}\")")
+            report.tapeset_path_added(tapeset_names[set], path)
+        end
     end
 
     # 6. List info about new used tapes.
     report.info('Tapeset(s) created:')
+    tape_info(db, report, tapes_used, verbose) unless (quiet)
+end
+
+def tapeset_append(db, report, verbose, quiet, ffd, no_tape_level, name)
+    # 1. Check if tapeset exists
+    count = db.get_first_value("SELECT COUNT (*) FROM tapesets WHERE name=\"#{name}\"")
+    if (count == 0) 
+        report.error("Tapeset with name: #{name} does not exist.")
+        return
+    end
+
+    # 2. Collect paths in the tapeset and the files to append to the tapeset.
+    tapeset_number = db.get_first_value("SELECT number FROM tapesets WHERE name=\"#{name}\"")
+    paths = db.execute("SELECT path FROM tapeset_paths WHERE tapeset_number=#{tapeset_number}")
+    paths.flatten!()
+
+    files = nil
+    query = 'SELECT * FROM files WHERE ('
+    paths.each() do |item|
+        query += "path LIKE \"#{item}%\" OR "
+    end
+    query.chomp!(' OR ')
+    query += ") AND (on_disk=1) AND (number NOT IN (SELECT file_number FROM links WHERE tapeset_number=#{tapeset_number}))"
+    if (ffd)
+        query += ' ORDER BY size DESC'
+    else
+        query += ' ORDER BY path ASC'
+    end
+    files = db.execute(query)
+    if (files.length() == 0)
+        report.error("No files matched the selection criteria.")
+        return
+    end
+
+    # 3. Bin packing.
+    accumulator = 0
+    files.each() do |file|
+        accumulator += file[2]
+        accumulator += (3 * 512) # Tar header overhead.
+    end
+    average_size = accumulator / files.length()
+
+    # TODO: This is bad, find a way to deal with tapes of different sizes.
+    first_tape_size = db.get_first_value('SELECT size FROM tapes')
+
+    # Reduce tape size with 5% to make room for overheads.
+    first_tape_size = (0.95 * first_tape_size).to_i()
+
+    # Get smallest integer number of tapes that will fit the data.
+    tapes_needed = (accumulator.to_f() / first_tape_size).ceil()
+
+    # Determine bytes per tape.
+    if (no_tape_level)
+        bytes_per_tape = first_tape_size
+    else
+        # Add the average file size here to give the bin packing algorithm some wriggle room.
+        bytes_per_tape = (accumulator / tapes_needed) + average_size
+    end
+
+    # Prepare.
+    tape_contents = []
+    tape_bytes_left = []
+    tape_bytes = []
+    for i in 0..(tapes_needed - 1)
+        tape_contents[i] = []
+        tape_bytes_left[i] = bytes_per_tape
+        tape_bytes[i] = 0
+    end
+
+    # Actual bin packing of files.
+    file_count = files.length()
+    for i in 0..(file_count - 1)
+        overhead = (512 * 3) + (512 - (files[i][2] % 512))
+        file_size = (files[i][2])
+
+        stored = false
+        for j in 0..(tapes_needed - 1)
+            if (tape_bytes_left[j] > (file_size + overhead + 1024)) # Add 1024 bytes for the tarball footer.
+                tape_contents[j] << files[i]
+                tape_bytes_left[j] -= (file_size + overhead)
+                tape_bytes[j] += file_size
+                stored = true
+                break
+            end
+        end
+        unless (stored)
+            report.error("Failed to store file #{files[i][4]} (#{files[i][2]} bytes). All tapes are full.")
+            return
+        end
+    end
+    
+    # 4. Check if enough tapes are available.
+    free_tapes = db.execute('SELECT * FROM tapes WHERE tapeset_idx=-1 ORDER BY label ASC')
+    if (free_tapes.length() < tapes_needed)
+        report.error("Insufficient free tapes. Available: #{free_tapes.length()} Required: #{tapes_needed}")
+        return
+    end
+
+    # 5. Add tapes to tapeset.
+    tape_index = 0
+    tapes_used = []
+
+    tapes_in_set = db.get_first_value("SELECT tape_count FROM tapesets WHERE number=#{tapeset_number}")
+    db.execute("UPDATE tapesets SET tape_count=#{tapes_in_set + tapes_needed} WHERE number=#{tapeset_number}")
+
+    for tape in 0..(tapes_needed - 1)
+        tape_index = tapes_in_set + tape
+        db.execute("UPDATE tapes SET tapeset_idx=#{tape_index}, " +
+            "ts_files=#{tape_contents[tape].length()}, " + 
+            "ts_size=#{tape_bytes[tape]} WHERE label=\"#{free_tapes[tape][1]}\"")
+        report.tape_updated(free_tapes[tape][1])
+
+        tape_contents[tape].each() do |file|
+            db.execute("INSERT INTO links (file_number, tape_number, tapeset_number) VALUES (#{file[0]}," +
+                " #{free_tapes[tape][0]}, #{tapeset_number})")
+            report.link_added(file[4], free_tapes[tape][1], name)
+        end
+
+        tapes_used << free_tapes[tape][1]
+    end
+
+    # 6. List info about new used tapes.
+    report.info('Tapeset updated:')
     tape_info(db, report, tapes_used, verbose) unless (quiet)
 end
 
@@ -1164,18 +1323,24 @@ def tapeset_remove(db, report, names)
         # 1. Delete the tapeset.
         db.execute("DELETE FROM tapesets WHERE number=#{tapeset_number}")
         report.tapeset_removed(tapeset)
-        # 2. Update tapes.
+        # 2. Delete the tapeset paths.
+        paths = db.execute("SELECT path FROM tapeset_paths WHERE tapeset_number=#{tapeset_number}")
+        db.execute("DELETE FROM tapeset_paths WHERE tapeset_number=#{tapeset_number}")
+        paths.each() do |path|
+            report.tapeset_path_removed(tapeset, path)
+        end
+        # 3. Update tapes.
         tapes.each() do |tape|
             db.execute("UPDATE tapes SET tapeset_idx=-1, written=NULL, verified=NULL, ts_files=NULL, ts_size=NULL, " +
                 "tape_files=NULL, tape_size=NULL, tar_size=NULL WHERE number=#{tape[0]}")
             report.tape_updated(tape[1])
         end
-        # 3. Remove files.
+        # 4. Remove files.
         files_remove.each() do |file|
             db.execute("DELETE FROM files WHERE number=#{file[0]}")
             report.file_removed(file[1])
         end
-        # 4. Remove links.
+        # 5. Remove links.
         db.execute("DELETE FROM links WHERE tapeset_number=#{tapeset_number}")
         links.each() do |link|
             report.link_removed(link[0], link[1], link[2])
@@ -1234,7 +1399,7 @@ end
 #-----------------------------------------------------------------------------------------------------------------------
 # Tar method section
 
-def tar_write(db, report, files, output, label)
+def tar_write(db, report, files, output, label, simulate)
     begin
         # Open manifest and filelist.
         manifest = File.open('manifest.txt', 'wb')
@@ -1270,13 +1435,17 @@ def tar_write(db, report, files, output, label)
         manifest.close()
         filelist.close()
 
-        result = `tar -H pax -b 8192 -cf #{output} manifest.txt -C / -T filelist.txt --totals 2>&1`
-        unless($?.success?())
-            report.error("Tar process returned with error status. Result:\n#{result}")
-            return false, nil
-        end
+        unless (simulate)
+            result = `tar -H pax -b 8192 -cf #{output} manifest.txt -C / -T filelist.txt --totals 2>&1`
+            unless($?.success?())
+                report.error("Tar process returned with error status. Result:\n#{result}")
+                return false, nil
+            end
 
-        written = result.match(/[0-9]+/).to_s().to_i()
+            written = result.match(/[0-9]+/).to_s().to_i()
+        else
+            written = write_size
+        end
 
         db.execute("UPDATE tapes SET tape_files=#{write_files.length()}, tape_size=#{write_size}, " +
             "tar_size=#{written} WHERE label=\"#{label}\"")
@@ -1602,6 +1771,7 @@ def tool_build_modifiers()
     m << Arg.new('--quiet'        , '-q', 0, 0, [], 'Run quietly.')
     m << Arg.new('--sql'          , nil , 0, 0, [], 'Shows SQL queries. Useful for debugging.')
     m << Arg.new('--async'        , nil , 0, 0, [], 'Database in async mode. Unsafe if PC unstable or power cut.')
+    m << Arg.new('--simulate'     , '-s', 0, 0, [], 'Simulates the tape operations.')
 
     m << Arg.new('--rewind'       , nil , 0, 0, [], 'Rewinds tape after write or verify.')
     m << Arg.new('--offline'      , nil , 0, 0, [], 'Offlines (ejects) tape after write or verify.')
@@ -1609,7 +1779,6 @@ def tool_build_modifiers()
 
     m << Arg.new('--double'       , '-2', 0, 0, [], 'Double redundancy for --add-tapeset.')
     m << Arg.new('--triple'       , '-3', 0, 0, [], 'Triple redundancy for --add-tapeset.')
-    m << Arg.new('--incremental'  , '-i', 0, 0, [], 'Incremental tapeset creation for --add-tapeset.')
     m << Arg.new('--ffd'          , nil , 0, 0, [], 'First Fit Decreasing bin packing for --add-tapeset.')
     m << Arg.new('--no-tape-level', nil , 0, 0, [], 'Fill tape to max instead of leveling for --add-tapeset.')
     return m
@@ -1641,6 +1810,7 @@ def tool_build_actions()
     a << Arg.new('--stage'          , nil , 2,  2, [:label, :path]  , 'Stages the tarball in the given path.')
 
     a << Arg.new('--add-tapeset'    , nil , 2, -1, [:name, :path]   , 'Adds a tapeset to the database.')
+    a << Arg.new('--append'         , nil , 1,  1, [:name]          , 'Appends new files to the named tapeset (incremental backup)')
     a << Arg.new('--remove-tapesets', nil , 1, -1, [:name]          , 'Removes tapesets from the database.')
     a << Arg.new('--rename'         , nil , 1,  2, [:name, :name]   , 'Renames a tapeset in the database.')
     a << Arg.new('--list-tapesets'  , nil , 0, -1, [:searchterm]    , 'Lists tapesets in the database.')
@@ -1650,8 +1820,8 @@ end
 
 def tool_usage(report, actions, modifiers)
     map = []
-    map << ['Actions:', [['Misc:', 1], ['Paths:', 5], ['Tapes:', 14], ['Tapesets:', 5]]]
-    map << ['Modifiers:', [['Misc:', 4], ['Tapes:', 3], ['Tapesets:', 5]]]
+    map << ['Actions:', [['Misc:', 1], ['Paths:', 5], ['Tapes:', 14], ['Tapesets:', 6]]]
+    map << ['Modifiers:', [['Misc:', 5], ['Tapes:', 3], ['Tapesets:', 4]]]
 
     tool_show_usage(report, 'Usage help:', actions, modifiers, map)
 end
@@ -1690,7 +1860,6 @@ def tool_split_modifiers(modifiers)
     quiet = false
     double = false
     triple = false
-    incremental = false
     ffd = false
     async = false
     rewind = false
@@ -1698,6 +1867,7 @@ def tool_split_modifiers(modifiers)
     no_tape_level = false
     sql = false
     compression = false
+    simulate = false
 
     modifiers.each() do |modifier|
         case modifier.long()
@@ -1711,8 +1881,6 @@ def tool_split_modifiers(modifiers)
         when '--triple'
             double = false
             triple = true
-        when '--incremental'
-            incremental = true
         when '--ffd'
             ffd = true
         when '--async'
@@ -1727,10 +1895,12 @@ def tool_split_modifiers(modifiers)
             sql = true
         when '--compression'
             compression = true
+        when '--simulate'
+            simulate = true
         end
     end
 
-    return verbose, quiet, double, triple, incremental, ffd, async, rewind, offline, no_tape_level, sql, compression
+    return verbose, quiet, double, triple, ffd, async, rewind, offline, no_tape_level, sql, compression, simulate
 end
 
 def tool_validate_command_line(report, actions, args)
@@ -1784,7 +1954,7 @@ end
 begin
     # Initialize variables
     version = 2
-    db_version = 3
+    db_version = 4
     report = Report.new()
     db = nil
 
@@ -1797,7 +1967,7 @@ begin
     args = tool_split_labels(args) unless (args.nil?())
     exit(-1) unless (tool_validate_command_line(report, actions, args))
 
-    verbose, quiet, double, triple, incremental, ffd, async, rewind, offline, no_tape_level, sql, compression = \
+    verbose, quiet, double, triple, ffd, async, rewind, offline, no_tape_level, sql, compression, simulate = \
         tool_split_modifiers(modifiers)
 
     report.configure(verbose, quiet)
@@ -1846,21 +2016,23 @@ begin
     when '--mark-verified'
         tape_mark_verified(db, report, args)
     when '--erase'
-        tape_erase(db, report, rewind, offline, args[0], args[1])
+        tape_erase(db, report, rewind, offline, simulate, args[0], args[1])
     when '--write'
-        tape_write(db, report, rewind, offline, compression, args[0], args[1])
+        tape_write(db, report, rewind, offline, compression, simulate, args[0], args[1])
     when '--verify'
-        tape_verify(db, report, rewind, offline, args[0], args[1])
+        tape_verify(db, report, rewind, offline, simulate, args[0], args[1])
     when '--write-verify'
-        tape_write_verify(db, report, rewind, offline, compression, args[0], args[1])
+        tape_write_verify(db, report, rewind, offline, compression, simulate, args[0], args[1])
     when '--replace'
         tape_replace(db, report, args[0], args[1])
     when '--stage'
         tape_stage(db, report, args[0], args[1])
 
     when '--add-tapeset'
-        tapeset_add(db, report, verbose, quiet, double, triple, incremental, ffd, no_tape_level, args[0], \
+        tapeset_add(db, report, verbose, quiet, double, triple, ffd, no_tape_level, args[0], \
             args[1..(args.length() -1)])
+    when '--append'
+        tapeset_append(db, report, verbose, quiet, ffd, no_tape_level, args[0])
     when '--remove-tapesets'
         tapeset_remove(db, report, args)
     when '--rename'
