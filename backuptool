@@ -253,7 +253,7 @@ end
 class Report < ReportBase
     def initialize()
         @r = { :f_add => 0, :f_up => 0, :f_rm => 0, :t_add => 0, :t_up => 0, :t_rm => 0, :s_add => 0, :s_up => 0,
-               :s_rm => 0, :l_add => 0, :l_rm => 0 }
+               :s_rm => 0, :l_add => 0, :l_rm => 0, :p_add => 0, :p_rm => 0}
     end
 
     def file_added(absolute_path)
@@ -299,6 +299,16 @@ class Report < ReportBase
     def tapeset_removed(name)
         @r[:s_rm] += 1
         puts("Tapeset #{name} removed.".color(CC::BLUE)) if (@verbose)
+    end
+
+    def tapeset_path_added(name, path)
+        @r[:p_add] += 1
+        puts("Path #{path} added to tapeset #{name}.")
+    end
+
+    def tapeset_path_removed(name, path)
+        @r[:p_rm] += 1
+        puts("Path #{path} removed from tapeset #{name}.")
     end
 
     def link_added(path, label, tapeset)
@@ -466,9 +476,10 @@ def db_init(report, version, db_version, async, verbose, wrapper = nil)
     files = db.get_first_value('SELECT COUNT(*) FROM files')
     tapes = db.get_first_value('SELECT COUNT(*) FROM tapes')
     tapesets = db.get_first_value('SELECT COUNT(*) FROM tapesets')
+    tapeset_paths = db.get_first_value('SELECT COUNT(*) FROM tapeset_paths')
     links = db.get_first_value('SELECT COUNT(*) FROM links')
 
-    data = [{files: files, tapes: tapes, tapesets: tapesets, links: links}]
+    data = [{files: files, tapes: tapes, tapesets: tapesets, tapeset_paths: tapeset_paths, links: links}]
     report.table(data, data[0].keys) if (verbose)
     report.msg('Database loaded.')
 
@@ -1153,7 +1164,7 @@ def tapeset_add(db, report, verbose, quiet, double, triple, ffd, no_tape_level, 
 
         paths.each do |path|
             db.execute("INSERT INTO tapeset_paths (tapeset_number, path) VALUES (#{set_number}, \"#{path}\")")
-            # TODO: Add creation report.
+            report.tapeset_path_added(tapeset_names[set], path)
         end
     end
 
@@ -1313,8 +1324,11 @@ def tapeset_remove(db, report, names)
         db.execute("DELETE FROM tapesets WHERE number=#{tapeset_number}")
         report.tapeset_removed(tapeset)
         # 2. Delete the tapeset paths.
+        paths = db.execute("SELECT path FROM tapeset_paths WHERE tapeset_number=#{tapeset_number}")
         db.execute("DELETE FROM tapeset_paths WHERE tapeset_number=#{tapeset_number}")
-        # TODO: Add delete report.
+        paths.each() do |path|
+            report.tapeset_path_removed(tapeset, path)
+        end
         # 3. Update tapes.
         tapes.each() do |tape|
             db.execute("UPDATE tapes SET tapeset_idx=-1, written=NULL, verified=NULL, ts_files=NULL, ts_size=NULL, " +
