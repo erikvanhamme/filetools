@@ -1,6 +1,6 @@
 #!/usr/bin/ruby
 
-# Copyright 2018 Erik Van Hamme
+# Copyright 2018-2019 Erik Van Hamme
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -303,12 +303,12 @@ class Report < ReportBase
 
     def tapeset_path_added(name, path)
         @r[:p_add] += 1
-        puts("Path #{path} added to tapeset #{name}.")
+        puts("Path #{path} added to tapeset #{name}.".color(CC::BLUE)) if (@verbose)
     end
 
     def tapeset_path_removed(name, path)
         @r[:p_rm] += 1
-        puts("Path #{path} removed from tapeset #{name}.")
+        puts("Path #{path} removed from tapeset #{name}.".color(CC::BLUE)) if (@verbose)
     end
 
     def link_added(path, label, tapeset)
@@ -1023,7 +1023,7 @@ end
 #-----------------------------------------------------------------------------------------------------------------------
 # Tapeset method section
 
-def tapeset_add(db, report, verbose, quiet, double, triple, ffd, no_tape_level, name, paths)
+def tapeset_add(db, report, verbose, quiet, double, triple, ffd, tape_level, name, paths)
     sets = triple ? 3 : double ? 2 : 1
 
     # 1. Assemble the tapeset names.
@@ -1089,11 +1089,11 @@ def tapeset_add(db, report, verbose, quiet, double, triple, ffd, no_tape_level, 
     tapes_needed = (accumulator.to_f() / first_tape_size).ceil()
 
     # Determine bytes per tape.
-    if (no_tape_level)
-        bytes_per_tape = first_tape_size
-    else
+    if (tape_level)
         # Add the average file size here to give the bin packing algorithm some wriggle room.
         bytes_per_tape = (accumulator / tapes_needed) + average_size
+    else
+        bytes_per_tape = first_tape_size
     end
 
     # Prepare.
@@ -1175,16 +1175,42 @@ def tapeset_add(db, report, verbose, quiet, double, triple, ffd, no_tape_level, 
     tape_info(db, report, tapes_used, verbose) unless (quiet)
 end
 
-def tapeset_append(db, report, verbose, quiet, ffd, no_tape_level, name)
+def tapeset_append(db, report, verbose, quiet, ffd, name)
     # 1. Check if tapeset exists
     count = db.get_first_value("SELECT COUNT (*) FROM tapesets WHERE name=\"#{name}\"")
     if (count == 0) 
         report.error("Tapeset with name: #{name} does not exist.")
         return
     end
-
-    # 2. Collect paths in the tapeset and the files to append to the tapeset.
     tapeset_number = db.get_first_value("SELECT number FROM tapesets WHERE name=\"#{name}\"")
+
+    # 2. Find the last tape in the set and see if it has been written, to figure out if we are appending on tape or not.
+    num_tapes_in_set = db.get_first_value("SELECT tape_count FROM tapesets WHERE number=#{tapeset_number}")
+    tape_last_idx = num_tapes_in_set - 1
+    last_tape = db.get_first_row("SELECT number, label, written FROM tapes LEFT JOIN links ON links.tape_number=tapes.number" +
+        " WHERE links.tapeset_number=#{tapeset_number} AND tapes.tapeset_idx=#{tape_last_idx}")
+
+    # If the last tape has not been written, delete the file links and remove it from the tapeset prior to appending.
+    if (last_tape[2] == nil)
+        remove = db.execute("SELECT files.path, tapes.label, tapesets.name FROM files LEFT JOIN links ON " +
+            "links.file_number=files.number LEFT JOIN tapes ON tapes.number=links.tape_number LEFT JOIN tapesets " +
+            "ON tapesets.number=links.tapeset_number WHERE links.tapeset_number=#{tapeset_number} AND " +
+            "links.tape_number=#{last_tape[0]}")
+
+        remove.each() do |item|
+            report.link_removed(item[0], item[1], item[2])
+        end
+
+        db.execute("DELETE FROM links WHERE tapeset_number=#{tapeset_number} AND tape_number=#{last_tape[0]}")
+
+        db.execute("UPDATE tapes SET tapeset_idx=-1 WHERE number=#{last_tape[0]}");
+        report.tape_updated(last_tape[1])
+
+        db.execute("UPDATE tapesets SET tape_count=#{num_tapes_in_set - 1} WHERE number=#{tapeset_number}")
+        report.tapeset_updated(name)
+    end
+
+    # 3. Collect paths in the tapeset and the files to append to the tapeset.
     paths = db.execute("SELECT path FROM tapeset_paths WHERE tapeset_number=#{tapeset_number}")
     paths.flatten!()
 
@@ -1206,7 +1232,7 @@ def tapeset_append(db, report, verbose, quiet, ffd, no_tape_level, name)
         return
     end
 
-    # 3. Bin packing.
+    # 4. Bin packing.
     accumulator = 0
     files.each() do |file|
         accumulator += file[2]
@@ -1224,12 +1250,7 @@ def tapeset_append(db, report, verbose, quiet, ffd, no_tape_level, name)
     tapes_needed = (accumulator.to_f() / first_tape_size).ceil()
 
     # Determine bytes per tape.
-    if (no_tape_level)
-        bytes_per_tape = first_tape_size
-    else
-        # Add the average file size here to give the bin packing algorithm some wriggle room.
-        bytes_per_tape = (accumulator / tapes_needed) + average_size
-    end
+    bytes_per_tape = first_tape_size
 
     # Prepare.
     tape_contents = []
@@ -1263,14 +1284,14 @@ def tapeset_append(db, report, verbose, quiet, ffd, no_tape_level, name)
         end
     end
     
-    # 4. Check if enough tapes are available.
+    # 5. Check if enough tapes are available.
     free_tapes = db.execute('SELECT * FROM tapes WHERE tapeset_idx=-1 ORDER BY label ASC')
     if (free_tapes.length() < tapes_needed)
         report.error("Insufficient free tapes. Available: #{free_tapes.length()} Required: #{tapes_needed}")
         return
     end
 
-    # 5. Add tapes to tapeset.
+    # 6. Add tapes to tapeset.
     tape_index = 0
     tapes_used = []
 
@@ -1293,9 +1314,25 @@ def tapeset_append(db, report, verbose, quiet, ffd, no_tape_level, name)
         tapes_used << free_tapes[tape][1]
     end
 
-    # 6. List info about new used tapes.
+    # 7. List info about new used tapes.
     report.info('Tapeset updated:')
     tape_info(db, report, tapes_used, verbose) unless (quiet)
+end
+
+def tapeset_extend(db, report, verbose, quiet, args)
+    name = args[0]
+
+    count = db.get_first_value("SELECT COUNT (*) FROM tapesets WHERE name=\"#{name}\"")
+    if (count == 0) 
+        report.error("Tapeset with name: #{name} does not exist.")
+        return
+    end
+    
+    number = db.get_first_value("SELECT number FROM tapesets WHERE name=\"#{name}\"")
+    for i in 1..(args.length() - 1)
+        db.execute("INSERT INTO tapeset_paths (tapeset_number, path) VALUES (#{number}, \"#{args[i]}\")")
+        report.tapeset_path_added(name, args[i])
+    end
 end
 
 def tapeset_remove(db, report, names)
@@ -1328,6 +1365,7 @@ def tapeset_remove(db, report, names)
         # 2. Delete the tapeset paths.
         paths = db.execute("SELECT path FROM tapeset_paths WHERE tapeset_number=#{tapeset_number}")
         db.execute("DELETE FROM tapeset_paths WHERE tapeset_number=#{tapeset_number}")
+        paths.flatten!()
         paths.each() do |path|
             report.tapeset_path_removed(tapeset, path)
         end
@@ -1396,6 +1434,16 @@ def tapeset_info(db, report, names)
         {:name => row[0], :tape => row[2], :volume => "#{(row[3] + 1)} / #{row[1]}", :created => c}
     end
     report.table(data, [:name, :tape, :volume, :created])
+
+    if (names.length() == 1)
+        number = db.get_first_value("SELECT number FROM tapesets WHERE name=\"#{names[0]}\"")
+        paths = db.execute("SELECT path FROM tapeset_paths WHERE tapeset_number=#{number}")
+
+        paths.collect!() do |row|
+            {:name => names[0], :path => row[0]}
+        end
+        report.table(paths, [:name, :path])
+    end
 end
 
 #-----------------------------------------------------------------------------------------------------------------------
@@ -1769,20 +1817,20 @@ end
 
 def tool_build_modifiers()
     m = []
-    m << Arg.new('--verbose'      , '-v', 0, 0, [], 'Run verbosely.')
-    m << Arg.new('--quiet'        , '-q', 0, 0, [], 'Run quietly.')
-    m << Arg.new('--sql'          , nil , 0, 0, [], 'Shows SQL queries. Useful for debugging.')
-    m << Arg.new('--async'        , nil , 0, 0, [], 'Database in async mode. Unsafe if PC unstable or power cut.')
-    m << Arg.new('--simulate'     , '-s', 0, 0, [], 'Simulates the tape operations.')
+    m << Arg.new('--verbose'     , '-v', 0, 0, [], 'Run verbosely.')
+    m << Arg.new('--quiet'       , '-q', 0, 0, [], 'Run quietly.')
+    m << Arg.new('--sql'         , nil , 0, 0, [], 'Shows SQL queries. Useful for debugging.')
+    m << Arg.new('--async'       , nil , 0, 0, [], 'Database in async mode. Unsafe if PC unstable or power cut.')
+    m << Arg.new('--simulate'    , '-s', 0, 0, [], 'Simulates the tape operations.')
 
-    m << Arg.new('--rewind'       , nil , 0, 0, [], 'Rewinds tape after write or verify.')
-    m << Arg.new('--offline'      , nil , 0, 0, [], 'Offlines (ejects) tape after write or verify.')
-    m << Arg.new('--compression'  , nil , 0, 0, [], 'Enables the tape drives hardware compression.')
+    m << Arg.new('--rewind'      , nil , 0, 0, [], 'Rewinds tape after write or verify.')
+    m << Arg.new('--offline'     , nil , 0, 0, [], 'Offlines (ejects) tape after write or verify.')
+    m << Arg.new('--compression' , nil , 0, 0, [], 'Enables the tape drives hardware compression.')
 
-    m << Arg.new('--double'       , '-2', 0, 0, [], 'Double redundancy for --add-tapeset.')
-    m << Arg.new('--triple'       , '-3', 0, 0, [], 'Triple redundancy for --add-tapeset.')
-    m << Arg.new('--ffd'          , nil , 0, 0, [], 'First Fit Decreasing bin packing for --add-tapeset.')
-    m << Arg.new('--no-tape-level', nil , 0, 0, [], 'Fill tape to max instead of leveling for --add-tapeset.')
+    m << Arg.new('--double'      , '-2', 0, 0, [], 'Double redundancy for --add-tapeset.')
+    m << Arg.new('--triple'      , '-3', 0, 0, [], 'Triple redundancy for --add-tapeset.')
+    m << Arg.new('--ffd'         , nil , 0, 0, [], 'First Fit Decreasing bin packing for --add-tapeset.')
+    m << Arg.new('--tape-level'  , nil , 0, 0, [], 'Don\'t fill tape to max. Instead use leveling for --add-tapeset.')
     return m
 end
 
@@ -1813,6 +1861,7 @@ def tool_build_actions()
 
     a << Arg.new('--add-tapeset'    , nil , 2, -1, [:name, :path]   , 'Adds a tapeset to the database.')
     a << Arg.new('--append'         , nil , 1,  1, [:name]          , 'Appends new files to the named tapeset (incremental backup)')
+    a << Arg.new('--extend'         , nil , 2, -1, [:name, :path]   , 'Extends the tapeset by adding the paths to it. Follow up with append.')
     a << Arg.new('--remove-tapesets', nil , 1, -1, [:name]          , 'Removes tapesets from the database.')
     a << Arg.new('--rename'         , nil , 1,  2, [:name, :name]   , 'Renames a tapeset in the database.')
     a << Arg.new('--list-tapesets'  , nil , 0, -1, [:searchterm]    , 'Lists tapesets in the database.')
@@ -1822,7 +1871,7 @@ end
 
 def tool_usage(report, actions, modifiers)
     map = []
-    map << ['Actions:', [['Misc:', 1], ['Paths:', 5], ['Tapes:', 14], ['Tapesets:', 6]]]
+    map << ['Actions:', [['Misc:', 1], ['Paths:', 5], ['Tapes:', 14], ['Tapesets:', 7]]]
     map << ['Modifiers:', [['Misc:', 5], ['Tapes:', 3], ['Tapesets:', 4]]]
 
     tool_show_usage(report, 'Usage help:', actions, modifiers, map)
@@ -1866,7 +1915,7 @@ def tool_split_modifiers(modifiers)
     async = false
     rewind = false
     offline = false
-    no_tape_level = false
+    tape_level = false
     sql = false
     compression = false
     simulate = false
@@ -1891,8 +1940,8 @@ def tool_split_modifiers(modifiers)
             rewind = true
         when '--offline'
             offline = true
-        when '--no-tape-level'
-            no_tape_level = true
+        when '--tape-level'
+            tape_level = true
         when '--sql'
             sql = true
         when '--compression'
@@ -1902,7 +1951,7 @@ def tool_split_modifiers(modifiers)
         end
     end
 
-    return verbose, quiet, double, triple, ffd, async, rewind, offline, no_tape_level, sql, compression, simulate
+    return verbose, quiet, double, triple, ffd, async, rewind, offline, tape_level, sql, compression, simulate
 end
 
 def tool_validate_command_line(report, actions, args)
@@ -1969,7 +2018,7 @@ begin
     args = tool_split_labels(args) unless (args.nil?())
     exit(-1) unless (tool_validate_command_line(report, actions, args))
 
-    verbose, quiet, double, triple, ffd, async, rewind, offline, no_tape_level, sql, compression, simulate = \
+    verbose, quiet, double, triple, ffd, async, rewind, offline, tape_level, sql, compression, simulate = \
         tool_split_modifiers(modifiers)
 
     report.configure(verbose, quiet)
@@ -2031,10 +2080,12 @@ begin
         tape_stage(db, report, args[0], args[1])
 
     when '--add-tapeset'
-        tapeset_add(db, report, verbose, quiet, double, triple, ffd, no_tape_level, args[0], \
+        tapeset_add(db, report, verbose, quiet, double, triple, ffd, tape_level, args[0], \
             args[1..(args.length() -1)])
     when '--append'
-        tapeset_append(db, report, verbose, quiet, ffd, no_tape_level, args[0])
+        tapeset_append(db, report, verbose, quiet, ffd, args[0])
+    when '--extend'
+        tapeset_extend(db, report, verbose, quiet, args)
     when '--remove-tapesets'
         tapeset_remove(db, report, args)
     when '--rename'
