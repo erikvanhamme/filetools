@@ -1011,7 +1011,7 @@ def tape_stage(db, report, label, path)
     t_start = Time.now()
     report.time("Started staging tape", t_start)
 
-    ok = tar_write(db, report, files, tar_file, label)
+    ok = tar_write(db, report, files, tar_file, label, false)
     report.tape_updated(label)
 
     t_end = Time.now()
@@ -1666,6 +1666,8 @@ def tar_verify(report, input)
                             if (read_manifest)
                                 read_manifest = false
                                 manifest.split("\n").each() do |line|
+                                    # TODO: Handle the case here where a filename has a double space in it. Split it on the
+                                    #       last occurrence of the double space.
                                     data = line.split('  ')
                                     hashes[data[1]] = data[0]
                                 end
