@@ -492,6 +492,46 @@ def manifest(db, args)
     puts("End tape #{tape[0]} manifest.".color(CC::BLUE))
 end
 
+def remove_backups(db, backups)
+    backups.each() do |backup|
+        backup_number = db.get_first_value("SELECT number FROM backups WHERE name=\"#{backup}\"")
+        if (backup_number.nil?())
+            puts("Backup with name #{backup} is not in the database.".color(CC::RED))
+            next
+        else
+            # 1. Remove tapes in the backup.
+            tape_labels = db.execute("SELECT label FROM tapes WHERE backup_number=#{backup_number}")
+            remove_tapes(db, tape_labels.flatten())
+
+            # 2. Remove backup.
+            db.execute("DELETE FROM backups WHERE number=#{backup_number}")
+            puts("Backup with name #{backup} has been deleted from database.".color(CC::BLUE))
+        end
+    end
+end
+
+def remove_tapes(db, tapes)
+    tapes.each() do |tape|
+        tape_number = db.get_first_value("SELECT number FROM tapes WHERE label=\"#{tape}\"")
+        if (tape_number.nil?())
+            puts("Tape with label #{tape} is not in the database.".color(CC::RED))
+            next
+        else
+            tarball_numbers = db.execute("SELECT number FROM tarballs WHERE tape_number=#{tape_number}")
+            tarball_numbers.each() do |tarball_number|
+                # 1. Delete the file links
+                db.execute("DELETE FROM file_tarball_links WHERE tarball_number=#{tarball_number[0]}")
+
+                # 2. Delete tarball
+                db.execute("DELETE FROM tarballs WHERE number=#{tarball_number[0]}")
+            end
+
+            db.execute("DELETE FROM tapes WHERE number=#{tape_number}")
+            puts("Tape with label #{tape} has been deleted from database.".color(CC::BLUE))
+        end
+    end
+end
+
 def restore(db, args)
     # TODO: Implement me.
 end
@@ -794,10 +834,12 @@ begin
         list_tarballs(db)
     when '--manifest'
         manifest(db, args)
-    # TODO: when '--remove-backups'
+    when '--remove-backups'
+        remove_backups(db, args)
     # TODO: when '--remove-filesets'
     # TODO: when '--remove-paths'
-    # TODO: when '--remove-tapes'
+    when '--remove-tapes'
+        remove_tapes(db, args)
     when '--restore'
         restore(db, args)
     when '--summary'
