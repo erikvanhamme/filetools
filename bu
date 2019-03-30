@@ -548,26 +548,33 @@ def summary(db)
         number, fileset_number, name = backup
 
         puts("Backup set #{name}:".color(CC::BLUE))
-        fileset_files = db.get_first_value("SELECT COUNT(*) FROM files LEFT JOIN file_fileset_links ON " +
+        fileset_file_sizes = db.execute("SELECT size FROM files LEFT JOIN file_fileset_links ON " +
             "file_fileset_links.file_number=files.number WHERE fileset_number=#{fileset_number}")
-        fileset_size = db.get_first_value("SELECT SUM(size) FROM files LEFT JOIN file_fileset_links ON " +
-            "file_fileset_links.file_number=files.number WHERE fileset_number=#{fileset_number}")
+        fileset_size = 0
+        fileset_file_sizes.each() do |filesize|
+            fileset_size += filesize[0]
+        end
 
-        files_not_written = db.get_first_value("SELECT COUNT(*) FROM files LEFT JOIN file_fileset_links ON " +
+        files_not_written = db.execute("SELECT size FROM files LEFT JOIN file_fileset_links ON " +
             "file_fileset_links.file_number=files.number WHERE file_fileset_links.fileset_number=#{fileset_number} " +
             "AND number NOT IN (SELECT files.number FROM files LEFT JOIN file_tarball_links ON " +
             "file_tarball_links.file_number=files.number LEFT JOIN tarballs ON " +
             "tarballs.number=file_tarball_links.tarball_number LEFT JOIN tapes ON tapes.number=tarballs.tape_number " +
             "LEFT JOIN backups ON backups.number=tapes.backup_number WHERE backup_number=#{number})")
-        if (files_not_written == 0)
+        if (files_not_written.length() == 0)
             puts("  Status: All files of the fileset are on tapes in the backup set.".color(CC::GREEN))
         else
-            puts("  Status: There are #{files_not_written} files not on tape in the backup set.".color(CC::RED))
+            unwritten_size = 0
+            files_not_written.each() do |filesize|
+                unwritten_size += filesize[0]
+            end
+            puts(("  Status: There are #{files_not_written.length()} files not on tape in the backup set for a size " +
+                "of #{unwritten_size} bytes.").color(CC::RED))
         end
 
         fileset_name = db.get_first_value("SELECT name FROM filesets WHERE number=#{fileset_number}")
-        puts(("  Fileset #{fileset_name} stores #{fileset_files} files for a total size of #{fileset_size} " +
-            "bytes:").color(CC::CYAN))
+        puts(("  Fileset #{fileset_name} stores #{fileset_file_sizes.length()} files for a total size of " +
+            "#{fileset_size} bytes:").color(CC::CYAN))
 
         paths = db.execute("SELECT path FROM paths WHERE fileset_number=#{fileset_number}")
         paths.each() do |path|
@@ -615,7 +622,8 @@ def write(db, args)
     backup_number = data[0]
     fileset_number = data[1]
 
-    tape = db.get_first_row("SELECT number, label FROM tapes WHERE backup_number=#{backup_number} AND full=0")
+    tape = db.get_first_row("SELECT number, label FROM tapes WHERE backup_number=#{backup_number} AND full=0 ORDER BY " +
+        "label ASC")
     if (tape.nil?())
         puts("There are no tapes available in backup set #{backup_name}.".color(CC::RED))
         return
