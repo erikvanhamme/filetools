@@ -1,0 +1,515 @@
+#!/usr/bin/ruby
+
+# Copyright 2019 Erik Van Hamme
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+require 'fileutils'
+require 'find'
+
+#-----------------------------------------------------------------------------------------------------------------------
+# Class definitions
+
+module CC # COMMON
+    BLACK = 30
+    RED = 31
+    GREEN = 32
+    YELLOW = 33
+    BLUE = 34
+    MAGENTA = 35
+    CYAN = 36
+    WHITE = 37
+    BRIGHT_BLACK = 90
+    BRIGHT_RED = 91
+    BRIGHT_GREEN = 92
+    BRIGHT_YELLOW = 93
+    BRIGHT_BLUE = 94
+    BRIGHT_MAGENTA = 95
+    BRIGHT_CYAN = 96
+    BRIGHT_WHITE = 97
+end
+
+class String
+    def color(fg, bg = nil) # COMMON
+        if (bg.nil?())
+            return "\e[#{fg}m#{self}\e[0m"
+        else
+            return "\e[#{fg};#{bg + 10}m#{self}\e[0m"
+        end
+    end
+
+    def to_ws(width) # COMMON
+        l = length()
+        if (l < width)
+            # Grow.
+            return self + (' ' * (width - l))
+        elsif (l > width)
+            # Shrink.
+            if (width > 3)
+                return self[0..(width - 4)] + '...'
+            else
+                return self[0..(width - 1)]
+            end
+        else
+            return self
+        end
+    end
+end
+
+class Array
+    def keys() # COMMON
+        k = []
+        for i in 0..(length() - 1)
+            k << i
+        end
+        return k
+    end
+end
+
+class Arg # COMMON
+    attr_accessor :long, :short, :min_args, :max_args, :args_type, :help
+
+    def initialize(long, short, min_args, max_args, args_type, help)
+        @long = long
+        @short = short
+        @min_args = min_args
+        @max_args = max_args
+        @args_type = args_type
+        @help = help
+    end
+end
+
+class ReportBase # COMMON
+    def configure(verbose, quiet)
+        @verbose = verbose
+        @quiet = quiet
+    end
+
+    def msg(s)
+        puts(s) if (@verbose)
+    end
+
+    def always(s)
+        puts(s)
+    end
+
+    def info(s)
+        puts(s.color(CC::GREEN)) unless (@quiet)
+    end
+
+    def warning(s)
+        puts("Warning: #{s}".color(CC::YELLOW))
+    end
+
+    def error(s)
+        puts("Error: #{s}".color(CC::RED))
+    end
+
+    def time(s, t_time)
+        puts("#{s} at #{t_time}.".color(CC::BRIGHT_MAGENTA)) if (@verbose)
+    end
+
+    def table(data, columns = nil, widths = nil, hide_table = false)
+        # Assemble the columns from the data unless given.
+        if (columns.nil?())
+            columns = []
+            data.each() do |row|
+                columns << row.keys()
+            end
+            columns.flatten!().uniq!()
+        end
+
+        # Calculate the wanted column lengths from the data.
+        lengths = Array.new(columns.length(), 0)
+        strings = []
+        col_idx = 0
+        columns.each() do |col|
+            l = col.to_s().length()
+            if (lengths[col_idx] < l)
+                lengths[col_idx] = l
+            end
+            col_idx += 1
+        end
+        data.each() do |row|
+            col_idx = 0
+            columns.each() do |col|
+                s = row[col].to_s()
+                l = s.length()
+
+                if (lengths[col_idx] < l)
+                    lengths[col_idx] = l
+                end
+
+                strings << s
+
+                col_idx += 1
+            end
+        end
+
+        # Deal with maximum widths if provided.
+        unless (widths.nil?())
+            col_idx = 0
+            columns.each() do |col|
+                unless (widths[col].nil?())
+                    lengths[col_idx] = widths[col]
+                end
+                col_idx += 1
+            end
+        end
+
+        # Print the table header.
+        unless (hide_table)
+            header = ''
+            line = ''
+            col_idx = 0
+            columns.each() do |col|
+                header += col.to_s().upcase().to_ws(lengths[col_idx]) + ' | '
+                line += ('-' * lengths[col_idx]) + '-+-'
+                col_idx += 1
+            end
+            header.chomp!(' | ')
+            line.chomp!('-+-')
+            puts header
+            puts line
+        end
+
+        # Print the table data.
+        separator = hide_table ? '' : ' | '
+        idx = 0
+        data.length().times() do ||
+            row_string = ''
+            col_idx = 0
+            columns.length().times() do ||
+                row_string += strings[idx].to_ws(lengths[col_idx]) + separator
+                col_idx += 1
+                idx += 1
+            end
+            row_string.chomp!(separator)
+            puts row_string
+        end
+    end
+end
+
+class Report < ReportBase
+    def initialize()
+        @r = { :p_ren => 0}
+    end
+
+    def photo_renamed(absolute_path_from, absolute_path_to)
+        @r[:p_ren] += 1
+        puts("Photo #{absolute_path_from} was renamed to #{absolute_path_to}.".color(CC::BLUE)) unless (@quiet)
+    end
+
+    def finalize()
+        if (@verbose)
+            puts('Report:')
+            if ((@r.values.inject(0) do |sum, x| sum + x end) > 0)
+                table([@r], @r.keys)
+            else
+                puts('No modifications.')
+            end
+        end
+    end
+end
+
+#-----------------------------------------------------------------------------------------------------------------------
+# Photos method section
+
+def exiv2_time_photo(photo)
+    exif = `exiv2 #{photo}`
+  
+    time = exif.match(/Image timestamp.*$/)
+    time = time.to_s().sub(/.*: /, '')
+
+    return time
+end
+
+def find_photos(folder)
+    photos = []
+    if File.exist?(folder) && File.directory?(folder)
+        Find.find(folder) do |path|
+            if (path.downcase() =~ /.*\.jpg$/) || (path.downcase() =~ /.*\.nef$/)
+                photos << path
+            end
+        end
+    end
+    return photos
+end
+
+def rename_photos(report, path)
+    puts "Renaming photos in #{path}"
+
+    photos = find_photos(path)
+    photos.each() do |photo|
+        time = exiv2_time_photo(photo)
+        report.time("Found photo: #{photo} taken at:", time)
+
+        time_text = time.to_s().gsub(/ /, '_').gsub(/:/, '-')
+
+        photo_dirname = File.dirname(photo)
+
+        if (photo.downcase() =~ /.*\.jpg$/)
+            ext = 'jpg'
+        else
+            ext = 'nef'
+        end
+
+        suffix = ''
+        filename = "#{photo_dirname}/#{time_text}#{suffix}.#{ext}"
+
+        if (photo != filename)
+            while (File.exists?(filename))
+                suffix += '_'
+                filename = "#{photo_dirname}/#{time_text}#{suffix}.#{ext}"
+            end
+    
+            File.rename(photo, filename)
+            report.photo_renamed(photo, filename)
+        end
+    end
+end
+
+#-----------------------------------------------------------------------------------------------------------------------
+# Tool method section
+
+def tool_find_arg_short(args, short) # COMMON
+    args.each() do |arg|
+        return arg if (arg.short() == short)
+    end unless (args.nil?())
+    return nil
+end
+
+def tool_find_arg_long(args, long) # COMMON
+    args.each() do |arg|
+        return arg if (arg.long() == long)
+    end unless (args.nil?())
+    return nil
+end
+
+def tool_usage_args(action) # COMMON
+    args = ''
+    unless (action.nil?())
+        action.args_type().each() do |arg|
+            args += "#{arg.upcase} "
+        end
+        args.chomp!(' ')
+        args += '...' if (action.max_args() == -1)
+        args = "<#{args}>" if ((action.min_args() == 0) && (action.max_args() != 0))
+    end
+    return args
+end
+
+def tool_show_usage(report, banner, actions, modifiers, map) # COMMON
+    report.always(banner)
+    report.always('=' * banner.length)
+
+    all = []
+    all << actions
+    all << modifiers
+    all.flatten!()
+
+    index = 0
+    map.each() do |submap|
+        report.always(submap[0])
+        report.always('-' * submap[0].length())
+        submap[1].each() do |subsubmap|
+            report.always(subsubmap[0])
+            subsubmap[1].times() do ||
+                action = all[index]
+                args = tool_usage_args(action)
+                short = action.short().nil?() ? '' : action.short()
+                long = "#{action.long()} #{args}"
+
+                short = short + (' ' * (10 - short.length()))
+                long = long + (' ' * (35 - long.length()))
+                report.always(short + long + action.help())
+
+                index += 1
+            end
+        end
+    end
+end
+
+def tool_parse_command_line(report, actions, modifiers) # COMMON
+    selected_actions = []
+    selected_modifiers = []
+
+    delete = []
+    ARGV.each() do |arg|
+        if (arg.match(/^\-[a-zA-Z0-9]{1}$/))
+            # Deal with short action or modifier.
+            action = tool_find_arg_short(actions, arg)
+            modifier = tool_find_arg_short(modifiers, arg)
+            if (action.nil?() && modifier.nil?())
+                report.error(arg)
+                return [], [], []
+            else
+                selected_actions << action unless (action.nil?())
+                selected_modifiers << modifier unless (modifier.nil?())
+                delete << arg
+            end
+        end
+        if (arg.match(/^\-\-[a-zA-Z0-9\-]{2,}$/))
+            # Deal with long action or modifier.
+            action = tool_find_arg_long(actions, arg)
+            modifier = tool_find_arg_long(modifiers, arg)
+            if (action.nil?() && modifier.nil?())
+                report.error(arg)
+                return [], [], []
+            else
+                selected_actions << action unless (action.nil?())
+                selected_modifiers << modifier unless (modifier.nil?())
+                delete << arg
+            end
+        end
+    end
+    delete.each() do |del|
+        ARGV.delete_at(ARGV.index(del))
+    end
+
+    return selected_actions, selected_modifiers, ARGV
+end
+
+def tool_build_modifiers()
+    m = []
+    m << Arg.new('--verbose'      , '-v', 0, 0, [], 'Run verbosely.')
+    m << Arg.new('--quiet'        , '-q', 0, 0, [], 'Run quietly.')
+    return m
+end
+
+def tool_build_actions()
+    a = []
+    a << Arg.new('--help'   , '-h', 0, 0, []      , 'Displays this help.')
+
+    a << Arg.new('--rename' , '-r', 1, 1, [:path] , 'Renames photos in the path based on EXIF data tags.')
+    return a
+end
+
+def tool_usage(report, actions, modifiers)
+    map = []
+    map << ['Actions:', [['Misc:', 1], ['Photo:', 1]]]
+    map << ['Modifiers:', [['Misc:', 2]]]
+
+    tool_show_usage(report, 'Usage help:', actions, modifiers, map)
+end
+
+def tool_validate_arg(arg, type)
+    case type
+    when :path
+        return File.exists?(arg)
+    else
+        # Incorrect type is never valid.
+        return false
+    end
+end
+
+def tool_split_modifiers(modifiers)
+    verbose = false
+    quiet = false
+
+    modifiers.each() do |modifier|
+        case modifier.long()
+        when '--verbose'
+            verbose = true
+        when '--quiet'
+            quiet = true
+            verbose = false
+        end
+    end
+
+    return verbose, quiet
+end
+
+def tool_validate_command_line(report, actions, args)
+    if (actions.length() == 0)
+        report.error('No valid action(s) specified.')
+        return false
+    end
+    if (actions.length() > 1)
+        report.error('Too many actions specified.')
+        return false
+    end
+
+    action = actions[0]
+    min_args = action.min_args()
+    max_args = action.max_args()
+
+    if (args.length() < min_args)
+        report.error('Not enough args.')
+        return false
+    end
+
+    if ((max_args != -1) && (args.length() != max_args))
+        report.error('Incorrect number of args.')
+        return false
+    end
+
+    arg_index = 0
+    args.length().times() do ||
+        arg = args[arg_index]
+        types = action.args_type()
+        if (arg_index >= types.length())
+            type = types.last()
+        else
+            type = types[arg_index]
+        end
+
+        unless (tool_validate_arg(arg, type))
+            report.error('Invalid arg: ' + arg)
+            return false
+        end
+
+        arg_index += 1
+    end
+
+    return true
+end
+
+#-----------------------------------------------------------------------------------------------------------------------
+# Main section
+
+# Initialize variables
+version = 1
+report = Report.new()
+
+# Prepare for dealing with command line.
+possible_actions = tool_build_actions()
+possible_modifiers = tool_build_modifiers()
+
+# Process command line and check validity.
+actions, modifiers, args = tool_parse_command_line(report, possible_actions, possible_modifiers)
+exit(-1) unless (tool_validate_command_line(report, actions, args))
+
+verbose, quiet = tool_split_modifiers(modifiers)
+
+report.configure(verbose, quiet)
+
+# Startup banner.
+report.info("Lazyboy photo renamer (version: #{version})".color(CC::CYAN))
+report.info("  Copyright 2019 Erik Van Hamme (erik.vanhamme@gmail.com)".color(CC::CYAN))
+
+# Execute selected action.
+action = actions[0].long()
+case action
+when '--help'
+    tool_usage(report, possible_actions, possible_modifiers)
+
+when '--rename'
+    rename_photos(report, args[0])
+
+else
+    report.error('Bug in tool_validate_command_line, should never be able to enter here.')
+end
+
+# Final report.
+report.finalize()
