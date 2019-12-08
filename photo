@@ -312,6 +312,15 @@ def import(db, folder, tag, from = -1, to = -1)
     end
 end
 
+def list_tags(db)
+    tags = db.execute("SELECT DISTINCT tag FROM photos ORDER BY TAG ASC")
+    tags.collect!() do |row|
+        count = db.get_first_value("SELECT COUNT(*) FROM photos WHERE tag=\"#{row[0]}\"")
+        {:tag => row[0], :photos => count}
+    end
+    table(tags)
+end
+
 def move(db)
     photos_db = db.execute('SELECT * FROM photos WHERE moved=0')
     photos = photos_from_db(photos_db)
@@ -452,8 +461,9 @@ def update(db, tag)
 end
 
 def usage()
-    puts("Usage:".color(CC::RED))
+    puts("Usage: (Red makes modifications, green is read only)")
     puts("--import FOLDER TAG <FROM> <TO>".color(CC::RED))
+    puts("--list-tags".color(CC::GREEN))
     puts("--move".color(CC::RED))
     puts("--retag OLD_TAG NEW_TAG".color(CC::RED))
     puts("--update TAG".color(CC::RED))
@@ -508,6 +518,8 @@ begin
         else
             import(db, nil, nil)
         end
+    when '--list-tags'
+        list_tags(db)
     when '--move'
         move(db)
     when '--retag'
