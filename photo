@@ -474,7 +474,7 @@ end
 #----------------------------------------------------------------------------------------------------------------------
 
 begin
-    db = SQLite3::Database.new('p.db')
+    db = SQLite3::Database.new('photo.db')
 
     if (db.execute('SELECT name FROM sqlite_master WHERE type="table" AND name="version"').empty?())
         # Create new db.
