@@ -204,7 +204,7 @@ end
 
 def exiv2(photo)
     unless photo.master.nil?()
-        exif = `exiv2 -pt -K Exif.Image.DateTime -K Exif.Photo.ExposureTime #{photo.master}`
+        exif = `exiv2 -pt -K Exif.Image.DateTime -K Exif.Photo.ExposureTime "#{photo.master}"`
 
         timestamp = exif.match(/^Exif.Image.DateTime.*$/ )[0]
         timestamp = timestamp.match(/[0-9]{4}\:[0-9]{2}\:[0-9]{2} [0-9]{2}\:[0-9]{2}\:[0-9]{2}$/)[0].gsub(/ /, '_').gsub(/:/, '-')
@@ -365,10 +365,62 @@ def move(db)
     end
 end
 
+def update(db, tag)
+    if tag.nil?()
+        puts('Usage: --update TAG'.color(CC::RED))
+        return
+    end
+
+    count = db.execute("SELECT COUNT(*) FROM photos WHERE tag=\"#{tag}\"")
+    if count == 0
+        puts("Tag with name: #{tag} does not exist in the database.".color(CC::RED))
+        return
+    end
+
+    folder = "./archive/#{tag}"
+
+    photos = folder_inventory(folder)
+
+    photos.values().each() do |photo|
+        sha1(photo)
+
+        result = db.execute("SELECT * FROM photos WHERE sha1=\"#{photo.sha1}\"")
+        if (result.length() == 0)
+            puts("Error: photo with sha1 of #{photo.sha1} does not exist in the database.".color(CC::RED))
+            next
+        end
+
+        photo_db = photos_from_db(result)[0]
+
+        updated = false
+
+        if photo_db.nksc != photo.nksc
+            db.execute("UPDATE photos SET nksc=\"#{photo.nksc}\" WHERE number=#{result[0][0]}")
+            updated = true
+        end
+
+        if photo_db.tif != photo.tif
+            db.execute("UPDATE photos SET tif=\"#{photo.tif}\" WHERE number=#{result[0][0]}")
+            updated = true
+        end
+
+        if photo_db.jpg != photo.jpg
+            db.execute("UPDATE photos SET jpg=\"#{photo.jpg}\" WHERE number=#{result[0][0]}")
+            updated = true
+        end
+
+        if updated == true
+            db.execute("UPDATE photos SET moved=0 WHERE number=#{result[0][0]}")
+            puts("Updated photo: #{photo.master}")
+        end
+    end
+end
+
 def usage()
     puts("Usage:".color(CC::RED))
-    puts("--move".color(CC::RED))
     puts("--import FOLDER TAG <FROM> <TO>".color(CC::RED))
+    puts("--move".color(CC::RED))
+    puts("--update TAG")
 end
 
 #----------------------------------------------------------------------------------------------------------------------
@@ -422,6 +474,8 @@ begin
         end
     when '--move'
         move(db)
+    when '--update'
+        update(db, args[0])
     else
         usage()
         exit(0)
