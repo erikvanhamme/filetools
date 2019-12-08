@@ -186,10 +186,10 @@ class ReportBase # COMMON
         # Print the table data.
         separator = hide_table ? '' : ' | '
         idx = 0
-        data.length().times() do ||
+        data.length().times() do | |
             row_string = ''
             col_idx = 0
-            columns.length().times() do ||
+            columns.length().times() do | |
                 row_string += strings[idx].to_ws(lengths[col_idx]) + separator
                 col_idx += 1
                 idx += 1
@@ -324,7 +324,7 @@ def tool_show_usage(report, banner, actions, modifiers, map) # COMMON
         report.always('-' * submap[0].length())
         submap[1].each() do |subsubmap|
             report.always(subsubmap[0])
-            subsubmap[1].times() do ||
+            subsubmap[1].times() do | |
                 action = all[index]
                 args = tool_usage_args(action)
                 short = action.short().nil?() ? '' : action.short()
@@ -455,7 +455,7 @@ def tool_validate_command_line(report, actions, args)
     end
 
     arg_index = 0
-    args.length().times() do ||
+    args.length().times() do | |
         arg = args[arg_index]
         types = action.args_type()
         if (arg_index >= types.length())
