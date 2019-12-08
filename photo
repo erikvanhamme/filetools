@@ -378,6 +378,28 @@ def move(db)
     end
 end
 
+def retag(db, old_tag, new_tag)
+    if old_tag.nil?() || new_tag.nil?() || old_tag == '' || new_tag == ''
+        puts("Usage: --retag OLD_TAG NEW_TAG".color(CC::RED))
+        return
+    end
+
+    count = db.get_first_value("SELECT COUNT(*) FROM photos WHERE tag=\"#{old_tag}\"")
+    if count == 0
+        puts("Tag with name: #{old_tag} does not exist in the database.".color(CC::RED))
+        return
+    end
+
+    count = db.get_first_value("SELECT COUNT(*) FROM photos WHERE tag=\"#{new_tag}\"")
+    if count > 0
+        puts("Tag with name: #{new_tag} already exists in the database.".color(CC::RED))
+        return
+    end
+
+    db.execute("UPDATE photos SET tag=\"#{new_tag}\", moved=0 WHERE tag=\"#{old_tag}\"")
+    puts("All photos with tag #{old_tag} retagged to #{new_tag}")
+end
+
 def update(db, tag)
     if tag.nil?()
         puts('Usage: --update TAG'.color(CC::RED))
@@ -433,7 +455,8 @@ def usage()
     puts("Usage:".color(CC::RED))
     puts("--import FOLDER TAG <FROM> <TO>".color(CC::RED))
     puts("--move".color(CC::RED))
-    puts("--update TAG")
+    puts("--retag OLD_TAG NEW_TAG".color(CC::RED))
+    puts("--update TAG".color(CC::RED))
 end
 
 #----------------------------------------------------------------------------------------------------------------------
@@ -487,6 +510,8 @@ begin
         end
     when '--move'
         move(db)
+    when '--retag'
+        retag(db, args[0], args[1])
     when '--update'
         update(db, args[0])
     else
