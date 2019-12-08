@@ -1,0 +1,434 @@
+#!/usr/bin/ruby
+
+# Copyright 2019 Erik Van Hamme (erik.vanhamme@gmail.com)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may NOT use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+require 'digest/sha1'
+require 'fileutils'
+require 'find'
+require 'sqlite3'
+
+#----------------------------------------------------------------------------------------------------------------------
+# Helpers
+#----------------------------------------------------------------------------------------------------------------------
+
+module CC
+    BLACK = 30
+    RED = 31
+    GREEN = 32
+    YELLOW = 33
+    BLUE = 34
+    MAGENTA = 35
+    CYAN = 36
+    WHITE = 37
+    BRIGHT_BLACK = 90
+    BRIGHT_RED = 91
+    BRIGHT_GREEN = 92
+    BRIGHT_YELLOW = 93
+    BRIGHT_BLUE = 94
+    BRIGHT_MAGENTA = 95
+    BRIGHT_CYAN = 96
+    BRIGHT_WHITE = 97
+end
+
+class String
+    def color(fg, bg = nil)
+        if (bg.nil?())
+            return "\e[#{fg}m#{self}\e[0m"
+        else
+            return "\e[#{fg};#{bg + 10}m#{self}\e[0m"
+        end
+    end
+
+    def to_ws(width)
+        l = length()
+        if (l < width)
+            # Grow.
+            return self + (' ' * (width - l))
+        elsif (l > width)
+            # Shrink.
+            if (width > 3)
+                return self[0..(width - 4)] + '...'
+            else
+                return self[0..(width - 1)]
+            end
+        else
+            return self
+        end
+    end
+end
+
+class Array
+    def keys()
+        k = []
+        for i in 0..(length() - 1)
+            k << i
+        end
+        return k
+    end
+end
+
+def table(data, columns = nil, widths = nil, hide_table = false)
+    # Assemble the columns from the data unless given.
+    if (columns.nil?())
+        columns = []
+        data.each() do |row|
+            columns << row.keys()
+        end
+        columns.flatten!().uniq!()
+    end
+
+    # Calculate the wanted column lengths from the data.
+    lengths = Array.new(columns.length(), 0)
+    strings = []
+    col_idx = 0
+    columns.each() do |col|
+        l = col.to_s().length()
+        if (lengths[col_idx] < l)
+            lengths[col_idx] = l
+        end
+        col_idx += 1
+    end
+    data.each() do |row|
+        col_idx = 0
+        columns.each() do |col|
+            s = row[col].to_s()
+            l = s.length()
+
+            if (lengths[col_idx] < l)
+                lengths[col_idx] = l
+            end
+
+            strings << s
+
+            col_idx += 1
+        end
+    end
+
+    # Deal with maximum widths if provided.
+    unless (widths.nil?())
+        col_idx = 0
+        columns.each() do |col|
+            unless (widths[col].nil?())
+                lengths[col_idx] = widths[col]
+            end
+            col_idx += 1
+        end
+    end
+
+    # Print the table header.
+    unless (hide_table)
+        header = ''
+        line = ''
+        col_idx = 0
+        columns.each() do |col|
+            header += col.to_s().upcase().to_ws(lengths[col_idx]) + ' | '
+            line += ('-' * lengths[col_idx]) + '-+-'
+            col_idx += 1
+        end
+        header.chomp!(' | ')
+        line.chomp!('-+-')
+        puts header
+        puts line
+    end
+
+    # Print the table data.
+    separator = hide_table ? '' : ' | '
+    idx = 0
+    data.length().times() do | |
+        row_string = ''
+        col_idx = 0
+        columns.length().times() do | |
+            row_string += strings[idx].to_ws(lengths[col_idx]) + separator
+            col_idx += 1
+            idx += 1
+        end
+        row_string.chomp!(separator)
+        puts row_string
+    end
+end
+
+class Photo
+    attr_accessor :name, :nef, :tif, :jpg, :nksc, :timestamp, :tag, :sha1, :idx
+
+    def initialize(name)
+        @name = name
+    end
+
+    def master
+        unless @nef.nil?()
+            return @nef
+        end
+        unless @tif.nil?()
+            return @tif
+        end
+        unless @jpg.nil?()
+            return @jpg
+        end
+        return nil
+    end
+
+    def master_tag
+        unless @nef.nil?()
+            return 'nef'
+        end
+        unless @tif.nil?()
+            return 'tif'
+        end
+        unless @jpg.nil?()
+            return 'jpg'
+        end
+        return nil
+    end
+end
+
+def strip_id(basename)
+    id = basename
+    id = id.sub(/.nef.nksc/, '')
+    id = id.sub(/.nef/, '')
+    id = id.sub(/.jpg/, '')
+    id = id.sub(/.tif/, '')
+    id
+end
+
+def exiv2(photo)
+    unless photo.master.nil?()
+        exif = `exiv2 -pt -K Exif.Image.DateTime -K Exif.Photo.ExposureTime #{photo.master}`
+
+        timestamp = exif.match(/^Exif.Image.DateTime.*$/ )[0]
+        timestamp = timestamp.match(/[0-9]{4}\:[0-9]{2}\:[0-9]{2} [0-9]{2}\:[0-9]{2}\:[0-9]{2}$/)[0].gsub(/ /, '_').gsub(/:/, '-')
+
+        photo.timestamp = timestamp
+    end
+end
+
+def sha1(photo)
+    unless photo.master.nil?()
+        photo.sha1 = Digest::SHA1.file(photo.master).hexdigest()
+    end
+end
+
+def folder_inventory(folder)
+    photos = Hash.new()
+    Find.find(folder) do |filename|
+        if (File.file?(filename))
+            basename = File.basename(filename).downcase()
+            id = strip_id(basename)
+
+            photo = photos[id]
+            if photo.nil?()
+                photo = Photo.new(id)
+                photos[id] = photo
+            end
+
+            if basename =~ /.nef.nksc/
+                photo.nksc = filename
+            elsif basename =~ /.nef/
+                photo.nef = filename
+            elsif basename =~ /.jpg/
+                photo.jpg = filename
+            elsif basename =~ /.tif/
+                photo.tif = filename
+            end
+        end
+    end
+    return photos
+end
+
+def photos_from_db(db_rows)
+    photos = []
+    db_rows.each() do |db_row|
+        photo = Photo.new(db_row[0].to_s())
+        photo.tag = db_row[1]
+        photo.timestamp = db_row[2]
+        photo.idx = db_row[3]
+        photo.sha1 = db_row[5]
+        photo.nef = db_row[6]
+        photo.nksc = db_row[7]
+        photo.tif = db_row[8]
+        photo.jpg = db_row[9]
+        photos << photo
+    end
+    return photos
+end
+
+#----------------------------------------------------------------------------------------------------------------------
+# Operations
+#----------------------------------------------------------------------------------------------------------------------
+
+def import(db, folder, tag, from = -1, to = -1)
+    if (folder.nil?() || tag.nil?())
+        puts('Usage: --import FOLDER TAG <FROM> <TO>'.color(CC::RED))
+        return
+    end
+
+    if (from != -1 || to != -1)
+        puts('Not implemented yet.'.color(CC::RED))
+        return
+    end
+
+    photos = folder_inventory(folder)
+
+    photos.values().each() do |photo|
+        exiv2(photo)
+        sha1(photo)
+        photo.tag = tag
+
+        matches = db.execute("SELECT sha1 FROM photos WHERE tag=\"#{tag}\" AND timestamp=\"#{photo.timestamp}\"")
+
+        duplicate = false
+        if matches.length() > 0
+            matches.each() do |db_sha1|
+                if (db_sha1[0] == photo.sha1)
+                    duplicate = true
+                    break
+                end
+            end
+        end
+
+        if duplicate == true
+            puts("File #{photo.master} already exists in the database.".color(CC::YELLOW))
+            next
+        end
+
+        index = matches.length()
+
+        db.execute("INSERT INTO photos(tag, timestamp, idx, master, sha1, nef, nksc, tif, jpg, moved) VALUES " +
+            "(\"#{tag}\", \"#{photo.timestamp}\", #{index}, \"#{photo.master_tag}\", \"#{photo.sha1}\", " +
+            "\"#{photo.nef}\", \"#{photo.nksc}\", \"#{photo.tif}\", \"#{photo.jpg}\", 0)")
+
+        puts("Photo #{photo.master} inserted into database.")
+    end
+end
+
+def move(db)
+    photos_db = db.execute('SELECT * FROM photos WHERE moved=0')
+    photos = photos_from_db(photos_db)
+
+    photos.each() do |photo|
+        suffix = ''
+        if (photo.idx > 0)
+            suffix = "_(#{photo.idx})"
+        end
+
+        tag_filename = photo.tag.gsub(/\//, '-')
+
+        target_nef_folder = "./archive/#{photo.tag}"
+        target_nksc_folder = "./archive/#{photo.tag}/NKSC_PARAM"
+        target_tif_folder = "./archive/#{photo.tag}/tif"
+        target_jpg_folder = "./archive/#{photo.tag}/jpg"
+
+        target_nef = "#{target_nef_folder}/#{tag_filename}_#{photo.timestamp}#{suffix}.nef"
+        target_nksc = "#{target_nksc_folder}/#{tag_filename}_#{photo.timestamp}#{suffix}.nef.nksc"
+        target_tif = "#{target_tif_folder}/#{tag_filename}_#{photo.timestamp}#{suffix}.tif"
+        target_jpg = "#{target_jpg_folder}/#{tag_filename}_#{photo.timestamp}#{suffix}.jpg"
+
+        unless photo.nef.nil?() || photo.nef == '' || photo.nef == target_nef
+            FileUtils.mkdir_p(target_nef_folder)
+            FileUtils.mv(photo.nef, target_nef)
+            query = "UPDATE photos SET nef=\"#{target_nef}\" WHERE number=#{photo.name}"
+            db.execute(query)
+        end
+        unless photo.nksc.nil?() || photo.nksc == '' || photo.nksc == target_nksc
+            FileUtils.mkdir_p(target_nksc_folder)
+            FileUtils.mv(photo.nksc, target_nksc)
+            query = "UPDATE photos SET nksc=\"#{target_nksc}\" WHERE number=#{photo.name}"
+            db.execute(query)
+        end
+        unless photo.tif.nil?() || photo.tif == '' || photo.tif == target_tif
+            FileUtils.mkdir_p(target_tif_folder)
+            FileUtils.mv(photo.tif, target_tif)
+            query = "UPDATE photos SET tif=\"#{target_tif}\" WHERE number=#{photo.name}"
+            db.execute(query)
+        end
+        unless photo.jpg.nil?() || photo.jpg == '' || photo.jpg == target_jpg
+            FileUtils.mkdir_p(target_jpg_folder)
+            FileUtils.mv(photo.jpg, target_jpg)
+            query = "UPDATE photos SET jpg=\"#{target_jpg}\" WHERE number=#{photo.name}"
+            db.execute(query)
+        end
+        query = "UPDATE photos SET moved=1 WHERE number=#{photo.name}"
+        db.execute(query)
+
+        puts("Photo #{photo.master} has been moved.")
+    end
+end
+
+def usage()
+    puts("Usage:".color(CC::RED))
+    puts("--move".color(CC::RED))
+    puts("--import FOLDER TAG <FROM> <TO>".color(CC::RED))
+end
+
+#----------------------------------------------------------------------------------------------------------------------
+# Main
+#----------------------------------------------------------------------------------------------------------------------
+
+begin
+    db = SQLite3::Database.new('p.db')
+
+    if (db.execute('SELECT name FROM sqlite_master WHERE type="table" AND name="version"').empty?())
+        # Create new db.
+        db.execute('CREATE TABLE version(version INTEGER NOT NULL)')
+        db.execute('INSERT INTO version(version) values(1)')
+
+        db.execute('CREATE TABLE photos(number INTEGER PRIMARY KEY, tag TEXT NOT NULL, timestamp TEXT NOT NULL, idx ' +
+            'INTEGER NOT NULL, master TEXT NOT NULL, sha1 TEXT NOT NULL, nef TEXT, nksc TEXT, tif TEXT, jpg TEXT, ' +
+            'moved INTEGER NOT NULL)')
+
+        puts('New database created.'.color(CC::YELLOW))
+        version = 1
+    else
+        # Check db version.
+        version = db.get_first_value('SELECT version FROM version;')
+        if (version != 1)
+            puts('Incompatible database version'.color(CC::RED))
+            exit(-1)
+        end
+    end
+
+    puts("Phototool [tool V1, database V#{version}]".color(CC::CYAN))
+    puts("  Copyright 2019 Erik Van Hamme (erik.vanhamme@gmail.com)".color(CC::CYAN))
+
+    args = ARGV
+
+    if (args.length() == 0)
+        usage()
+        exit(0)
+    end
+
+    action = args[0]
+    args = args[1..(args.length() - 1)]
+
+    case action
+    when '--import'
+        if args.length() == 2
+            import(db, args[0], args[1])
+        elsif args.length() == 4
+            import(db, args[0], args[1], args[2], args[3])
+        else
+            import(db, nil, nil)
+        end
+    when '--move'
+        move(db)
+    else
+        usage()
+        exit(0)
+    end
+
+rescue SQLite3::Exception => exception
+    puts("SQL exception: #{exception.to_s()}".color(CC::RED))
+ensure
+    db.close() unless db.nil?()
+end
