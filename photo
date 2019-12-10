@@ -263,6 +263,35 @@ def photos_from_db(db_rows)
     return photos
 end
 
+def yes_no_question(question, default = false)
+    answer = nil
+    while answer.nil?()
+        if (default == true)
+            puts("#{question.color(CC::YELLOW)} (y/n) [y]")
+        else
+            puts("#{question.color(CC::YELLOW)} (y/n) [n]")
+        end
+
+        input = STDIN.gets()
+
+        case input.downcase()
+        when "\n"
+            answer = default
+        when "y\n"
+            answer = true
+        when "yes\n"
+            answer = true
+        when "n\n"
+            answer = false
+        when "no\n"
+            answer = false
+        else
+            answer = nil
+        end
+    end
+    return answer
+end
+
 #----------------------------------------------------------------------------------------------------------------------
 # Operations
 #----------------------------------------------------------------------------------------------------------------------
@@ -401,8 +430,10 @@ def retag(db, old_tag, new_tag)
 
     count = db.get_first_value("SELECT COUNT(*) FROM photos WHERE tag=\"#{new_tag}\"")
     if count > 0
-        puts("Tag with name: #{new_tag} already exists in the database.".color(CC::RED))
-        return
+        merge = yes_no_question("Tag with name: #{new_tag} already exists in the database. Do you wish to merge?")
+        unless merge
+            return
+        end
     end
 
     db.execute("UPDATE photos SET tag=\"#{new_tag}\", moved=0 WHERE tag=\"#{old_tag}\"")
