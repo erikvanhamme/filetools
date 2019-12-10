@@ -232,13 +232,13 @@ def folder_inventory(folder)
                 photos[id] = photo
             end
 
-            if basename =~ /.nef.nksc/
+            if basename =~ /.nef.nksc$/
                 photo.nksc = filename
-            elsif basename =~ /.nef/
+            elsif basename =~ /.nef$/
                 photo.nef = filename
-            elsif basename =~ /.jpg/
+            elsif basename =~ /.jpg$/
                 photo.jpg = filename
-            elsif basename =~ /.tif/
+            elsif basename =~ /.tif$/
                 photo.tif = filename
             end
         end
