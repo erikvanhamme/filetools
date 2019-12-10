@@ -292,6 +292,14 @@ def yes_no_question(question, default = false)
     return answer
 end
 
+def number_or_nil(string)
+  begin
+    Integer(string || '', 10)
+  rescue ArgumentError
+    nil
+  end
+end
+
 #----------------------------------------------------------------------------------------------------------------------
 # Operations
 #----------------------------------------------------------------------------------------------------------------------
@@ -302,14 +310,43 @@ def import(db, folder, tag, from = -1, to = -1)
         return
     end
 
+    ranged = false
+    range_from = 0
+    range_to = 0
     if (from != -1 || to != -1)
-        puts('Not implemented yet.'.color(CC::RED))
-        return
+        f_i = number_or_nil(from)
+        t_i = number_or_nil(to)
+
+        if f_i.nil?() || t_i.nil?() || f_i < 0 || t_i < 0 || f_i > 9999 || t_i > 9999 || f_i > t_i
+            puts("Incorrect range [#{from}, #{to}] specified.".color(CC::RED))
+            return
+        end
+
+        puts("Range: from=#{from}, to=#{to}")
+        ranged = true
+        range_from = f_i
+        range_to = t_i
     end
 
     photos = folder_inventory(folder)
 
     photos.values().each() do |photo|
+        if ranged
+            basename = File.basename(photo.master).downcase
+            if basename =~ /[a-z]{3}_[0-9]{4}\./ || basename =~ /_[a-z]{3}[0-9]{4}\./
+
+                num_match = basename.match(/[0-9]{4}/)
+                num = number_or_nil(num_match[0])
+
+                if num < range_from || num > range_to
+                    next
+                end
+            else
+                puts("Skipping photo #{photo.master} because its name does not match XXX_YYYY or _XXXYYYY.".color(CC::RED))
+                next
+            end
+        end
+
         exiv2(photo)
         sha1(photo)
         photo.tag = tag
