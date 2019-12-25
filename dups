@@ -1,0 +1,334 @@
+#!/usr/bin/ruby
+
+# Copyright 2019 Erik Van Hamme (erik.vanhamme@gmail.com)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may NOT use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+require 'digest/sha1'
+require 'fileutils'
+require 'find'
+require 'sqlite3'
+
+#----------------------------------------------------------------------------------------------------------------------
+# Helpers
+#----------------------------------------------------------------------------------------------------------------------
+
+module CC
+    BLACK = 30
+    RED = 31
+    GREEN = 32
+    YELLOW = 33
+    BLUE = 34
+    MAGENTA = 35
+    CYAN = 36
+    WHITE = 37
+    BRIGHT_BLACK = 90
+    BRIGHT_RED = 91
+    BRIGHT_GREEN = 92
+    BRIGHT_YELLOW = 93
+    BRIGHT_BLUE = 94
+    BRIGHT_MAGENTA = 95
+    BRIGHT_CYAN = 96
+    BRIGHT_WHITE = 97
+end
+
+class String
+    def color(fg, bg = nil)
+        if (bg.nil?())
+            return "\e[#{fg}m#{self}\e[0m"
+        else
+            return "\e[#{fg};#{bg + 10}m#{self}\e[0m"
+        end
+    end
+
+    def to_ws(width)
+        l = length()
+        if (l < width)
+            # Grow.
+            return self + (' ' * (width - l))
+        elsif (l > width)
+            # Shrink.
+            if (width > 3)
+                return self[0..(width - 4)] + '...'
+            else
+                return self[0..(width - 1)]
+            end
+        else
+            return self
+        end
+    end
+end
+
+class Array
+    def keys()
+        k = []
+        for i in 0..(length() - 1)
+            k << i
+        end
+        return k
+    end
+end
+
+def table(data, columns = nil, widths = nil, hide_table = false)
+    # Assemble the columns from the data unless given.
+    if (columns.nil?())
+        columns = []
+        data.each() do |row|
+            columns << row.keys()
+        end
+        columns.flatten!().uniq!()
+    end
+
+    # Calculate the wanted column lengths from the data.
+    lengths = Array.new(columns.length(), 0)
+    strings = []
+    col_idx = 0
+    columns.each() do |col|
+        l = col.to_s().length()
+        if (lengths[col_idx] < l)
+            lengths[col_idx] = l
+        end
+        col_idx += 1
+    end
+    data.each() do |row|
+        col_idx = 0
+        columns.each() do |col|
+            s = row[col].to_s()
+            l = s.length()
+
+            if (lengths[col_idx] < l)
+                lengths[col_idx] = l
+            end
+
+            strings << s
+
+            col_idx += 1
+        end
+    end
+
+    # Deal with maximum widths if provided.
+    unless (widths.nil?())
+        col_idx = 0
+        columns.each() do |col|
+            unless (widths[col].nil?())
+                lengths[col_idx] = widths[col]
+            end
+            col_idx += 1
+        end
+    end
+
+    # Print the table header.
+    unless (hide_table)
+        header = ''
+        line = ''
+        col_idx = 0
+        columns.each() do |col|
+            header += col.to_s().upcase().to_ws(lengths[col_idx]) + ' | '
+            line += ('-' * lengths[col_idx]) + '-+-'
+            col_idx += 1
+        end
+        header.chomp!(' | ')
+        line.chomp!('-+-')
+        puts header
+        puts line
+    end
+
+    # Print the table data.
+    separator = hide_table ? '' : ' | '
+    idx = 0
+    data.length().times() do | |
+        row_string = ''
+        col_idx = 0
+        columns.length().times() do | |
+            row_string += strings[idx].to_ws(lengths[col_idx]) + separator
+            col_idx += 1
+            idx += 1
+        end
+        row_string.chomp!(separator)
+        puts row_string
+    end
+end
+
+def sha1(file)
+    return Digest::SHA1.file(file).hexdigest()
+end
+
+def yes_no_question(question, default = false)
+    answer = nil
+    while answer.nil?()
+        if (default == true)
+            puts("#{question.color(CC::YELLOW)} (y/n) [y]")
+        else
+            puts("#{question.color(CC::YELLOW)} (y/n) [n]")
+        end
+
+        input = STDIN.gets()
+
+        case input.downcase()
+        when "\n"
+            answer = default
+        when "y\n"
+            answer = true
+        when "yes\n"
+            answer = true
+        when "n\n"
+            answer = false
+        when "no\n"
+            answer = false
+        else
+            answer = nil
+        end
+    end
+    return answer
+end
+
+#----------------------------------------------------------------------------------------------------------------------
+# Operations
+#----------------------------------------------------------------------------------------------------------------------
+
+def update_master(db, folder)
+    if (folder.nil?() || folder == '' || Dir.exists?(folder) == false)
+        puts("Usage: --update-master FOLDER".color(CC::RED))
+        return
+    end
+
+    quick = yes_no_question("Do quick update (additions only)?")
+
+    in_db = Hash.new()
+
+    result = db.execute('SELECT * FROM hashes')
+    result.each() do |row|
+        in_db[row[0]] = row[1]
+    end
+
+    Find.find(folder) do |filename|
+        if (File.file?(filename))
+            if quick
+                hash_db = in_db[filename]
+                if hash_db.nil?()
+                    hash_file = sha1(filename)
+                    puts ("Adding #{filename} .")
+                    db.execute("INSERT INTO hashes (filename, sha1) VALUES (\"#{filename}\", \"#{hash_file}\")")
+                end
+            else
+                hash_file = sha1(filename)
+                hash_db = in_db[filename]
+
+                if hash_db.nil?() || hash_db == ''
+                    puts ("Adding #{filename} .")
+                    db.execute("INSERT INTO hashes (filename, sha1) VALUES (\"#{filename}\", \"#{hash_file}\")")
+                elsif hash_file != hash_db
+                    puts ("Updating #{filename} .")
+                    db.execute("UPDATE hashes SET sha1=\"#{hash_file}\" WHERE filename=\"#{filename}\"")
+                    in_db.delete(filename)
+                elsif hash_file == hash_db
+                    in_db.delete(filename)
+                end
+            end
+        end
+    end
+
+    in_db.keys().each() do |filename|
+        puts ("Deleting #{filename}")
+        db.execute("DELETE FROM hashes WHERE filename=\"#{filename}\"")
+    end unless quick
+end
+
+def scan_dups(db, folder)
+    if (folder.nil?() || folder == '' || Dir.exists?(folder) == false)
+        puts("--scan_dups FOLDER".color(CC::GREEN))
+        return
+    end
+
+    progress = yes_no_question('Show progress?', true)
+    delete = yes_no_question('Delete duplicate files?', false)
+
+    Find.find(folder) do |filename|
+        if (File.file?(filename))
+            if progress
+                puts("Hashing file #{filename}".color(CC::MAGENTA))
+            end
+
+            hash_file = sha1(filename)
+
+            if (db.get_first_value("SELECT COUNT(*) FROM hashes WHERE sha1=\"#{hash_file}\"") > 0)
+                if delete
+                    puts("Duplicate: #{filename} . Deleting...".color(CC::RED))
+                    FileUtils.rm_rf(filename)
+                else
+                    puts("Duplicate: #{filename}".color(CC::GREEN))
+                end
+            end
+        end
+    end
+end
+
+def usage()
+    puts("Usage: (Red makes modifications, green is read only)")
+    puts("--update-master FOLDER".color(CC::RED))
+    puts("--scan_dups FOLDER".color(CC::GREEN))
+end
+
+#----------------------------------------------------------------------------------------------------------------------
+# Main
+#----------------------------------------------------------------------------------------------------------------------
+
+begin
+    db = SQLite3::Database.new('dups.db')
+
+    if (db.execute('SELECT name FROM sqlite_master WHERE type="table" AND name="version"').empty?())
+        # Create new db.
+        db.execute('CREATE TABLE version(version INTEGER NOT NULL)')
+        db.execute('INSERT INTO version(version) values(1)')
+
+        db.execute('CREATE TABLE hashes(filename TEXT NOT NULL, sha1 TEXT NOT NULL)')
+
+        puts('New database created.'.color(CC::YELLOW))
+        version = 1
+    else
+        # Check db version.
+        version = db.get_first_value('SELECT version FROM version;')
+        if (version != 1)
+            puts('Incompatible database version'.color(CC::RED))
+            exit(-1)
+        end
+    end
+
+    puts("Duplicates tool [tool V1, database V#{version}]".color(CC::CYAN))
+    puts("  Copyright 2019 Erik Van Hamme (erik.vanhamme@gmail.com)".color(CC::CYAN))
+
+    args = ARGV
+
+    if (args.length() == 0)
+        usage()
+        exit(0)
+    end
+
+    action = args[0]
+    args = args[1..(args.length() - 1)]
+
+    case action
+    when '--update-master'
+        update_master(db, args[0])
+    when '--scan-dups'
+        scan_dups(db, args[0])
+    else
+        usage()
+        exit(0)
+    end
+
+rescue SQLite3::Exception => exception
+    puts("SQL exception: #{exception.to_s()}".color(CC::RED))
+ensure
+    db.close() unless db.nil?()
+end
