@@ -430,11 +430,11 @@ def move(db)
         target_tif = "#{target_tif_folder}/#{tag_filename}_#{photo.timestamp}#{suffix}.tif"
         target_jpg = "#{target_jpg_folder}/#{tag_filename}_#{photo.timestamp}#{suffix}.jpg"
 
-        source_nksc_folder = File.dirname(photo.nksc)
-        source_nef_folder = File.dirname(photo.nef)
-        source_tif_folder = File.dirname(photo.tif)
-        source_jpg_folder = File.dirname(photo.jpg)
-        
+        source_nksc_folder = File.dirname(photo.nksc) unless (photo.nksc.nil?() || photo.nksc == '')
+        source_nef_folder = File.dirname(photo.nef) unless (photo.nef.nil?() || photo.nef == '')
+        source_tif_folder = File.dirname(photo.tif) unless (photo.tif.nil?() || photo.tif == '')
+        source_jpg_folder = File.dirname(photo.jpg) unless (photo.jpg.nil?() || photo.jpg == '')
+
         unless photo.nef.nil?() || photo.nef == '' || photo.nef == target_nef
             FileUtils.mkdir_p(target_nef_folder)
             FileUtils.mv(photo.nef, target_nef)
@@ -465,7 +465,7 @@ def move(db)
         # Make sure nksc folder goes first, and nef folder goes last!
         folders = [source_nksc_folder, source_tif_folder, source_jpg_folder, source_nef_folder]
         folders.each() do |folder|
-            if (folder != '.') && Dir.exists?(folder) && Dir.empty?(folder)
+            if (folder != '.') && folder.nil?() == false && Dir.exists?(folder) && Dir.empty?(folder)
                 FileUtils.rm_rf(folder)
             end
         end
