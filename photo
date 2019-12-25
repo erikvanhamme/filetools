@@ -325,6 +325,57 @@ end
 # Operations
 #----------------------------------------------------------------------------------------------------------------------
 
+def collect_source(db, folder)
+    if (folder.nil?() || File.directory?(folder) == false)
+        puts('Usage: --collect-source FOLDER'.color(CC::RED))
+        return
+    end
+
+    source_dir = "#{folder}/source"
+    nksc_dir = "#{source_dir}/NKSC_PARAM"
+    unless File.exists?(nksc_dir)
+        FileUtils.mkdir_p(nksc_dir)
+    end
+
+    photos = []
+
+    Find.find(folder) do |filename|
+        basename = File.basename(filename)
+
+        puts("Searching #{filename} in datatabase.")
+
+        if (filename.downcase() =~ /\.jpg$/)
+            rows = db.execute("SELECT * FROM photos WHERE jpg LIKE \"%#{basename}\"")
+
+            if (rows.nil?() || rows.length() != 1) 
+                puts("Could not find photo linked to #{basename} in database.".color(CC::RED))
+                next
+            end
+
+            photos << photos_from_db(rows)[0]
+        end
+
+        if (filename.downcase() =~ /\.tif$/)
+            # TODO: Support tiff here as well.
+        end
+    end
+
+    photos.each() do |photo|
+        if (photo.master_tag != 'nef')
+            puts("Photo #{photo.name} does not have a raw as master.".color(CC::RED))
+            next
+        end
+
+        puts("Copying #{photo.nef} ...")
+        FileUtils.cp(photo.nef, source_dir)
+
+        unless (photo.nksc.nil?())
+            puts("Copying #{photo.nksc} ...") 
+            FileUtils.cp(photo.nksc, nksc_dir)
+        end
+    end
+end
+
 def import(db, folder, tag, from = -1, to = -1)
     if (folder.nil?() || tag.nil?())
         puts('Usage: --import FOLDER TAG <FROM> <TO>'.color(CC::RED))
@@ -551,6 +602,7 @@ end
 
 def usage()
     puts("Usage: (Red makes modifications, green is read only)")
+    puts("--collect-source FOLDER".color(CC::GREEN))
     puts("--import FOLDER TAG <FROM> <TO>".color(CC::RED))
     puts("--list-tags".color(CC::GREEN))
     puts("--move".color(CC::RED))
@@ -599,6 +651,8 @@ begin
     args = args[1..(args.length() - 1)]
 
     case action
+    when '--collect-source'
+        collect_source(db, args[0])
     when '--import'
         if args.length() == 2
             import(db, args[0], args[1])
