@@ -706,6 +706,8 @@ def write(db, args)
         return
     end
 
+    puts("Started tape activity at #{Time.now().to_s()}.".color(CC::MAGENTA))
+
     # Advance the tape to the correct file record.
     if (tarball_index > 0)
         result = `mt-st -f #{device} fsf #{tarball_index} 2>&1`
@@ -761,6 +763,15 @@ def write(db, args)
         File.delete('filelist.txt')
     end
 
+    # Rewind.
+    result = `mt-st -f #{device} rewind 2>&1`
+    unless ($?.success?())
+        puts("Could not rewind: mt-st error: #{result}".color(CC::RED))
+        return
+    end
+
+    puts("Finished tape activity at #{Time.now().to_s()}.".color(CC::MAGENTA))
+
     if (full)
         # Determine how far we got if the tape was full.
         files_written = []
@@ -799,13 +810,6 @@ def write(db, args)
 
     if (full)
         db.execute("UPDATE tapes SET full=1 WHERE number=#{tape_number}")
-    end
-
-    # Rewind.
-    result = `mt-st -f #{device} rewind 2>&1`
-    unless ($?.success?())
-        puts("Could not rewind: mt-st error: #{result}".color(CC::RED))
-        return
     end
 
     puts("Finished write at #{Time.now().to_s()}.".color(CC::MAGENTA))
