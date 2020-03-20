@@ -1,6 +1,6 @@
 #!/usr/bin/ruby
 
-# Copyright 2018-2019 Erik Van Hamme (erik.vanhamme@gmail.com)
+# Copyright 2018-2020 Erik Van Hamme (erik.vanhamme@gmail.com)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may NOT use this file except in compliance with the License.
@@ -217,13 +217,13 @@ def update_fileset_path(db, fileset_number, path)
 
                 if (update_number.nil?())
                     # Nothing to update, add it.
-                    ret = db.execute("INSERT INTO files(path, sha1, mtime, size) VALUES(\"#{filename}\", \"#{sha1}\", " +
-                        "#{mtime}, #{filesize})")
+                    ret = db.execute("INSERT INTO files(path, sha1, mtime, size, on_disk) VALUES(\"#{filename}\", " +
+                        "\"#{sha1}\", #{mtime}, #{filesize}, 1)")
                     puts("Added file #{filename} to database.".color(CC::BLUE))
                 else
                     # Update file with matching path that is not in tarball.
-                    db.execute("UPDATE files SET sha1=\"#{sha1}\", mtime=#{mtime}, size=#{filesize} WHERE " +
-                        "number=#{update_number}")
+                    db.execute("UPDATE files SET sha1=\"#{sha1}\", mtime=#{mtime}, size=#{filesize}, on_disk = 1 " +
+                        " WHERE number=#{update_number}")
                     puts("Updated file #{filename} in database.".color(CC::BLUE))
                 end
 
@@ -243,7 +243,7 @@ def update_fileset_path(db, fileset_number, path)
     end
 
     # Step 2: Remove files in database that are no longer on disk and are not in a (relevant) tarball.
-    files_to_consider = db.execute("SELECT number, path FROM files LEFT JOIN file_fileset_links ON " +
+    files_to_consider = db.execute("SELECT number, path, on_disk FROM files LEFT JOIN file_fileset_links ON " +
         "file_fileset_links.file_number=files.number WHERE fileset_number=#{fileset_number}")
     files_to_consider.each() do |file_to_consider|
         unless (File.exists?(file_to_consider[1]))
@@ -261,11 +261,17 @@ def update_fileset_path(db, fileset_number, path)
 
             # Check if this file appears in any other tarball.
             # If not, remove the file from the database.
+            # If yes, mark as not on disk.
             in_tarballs = db.get_first_value("SELECT COUNT(*) FROM file_tarball_links WHERE " +
                 "file_number=#{file_to_consider[0]}")
             if (in_tarballs == 0)
                 db.execute("DELETE FROM files WHERE number=#{file_to_consider[0]}")
                 puts("Removed file #{file_to_consider[1]} from database.".color(CC::BLUE))
+            else
+                if (file_to_consider[2] != 0)
+                    db.execute("UPDATE files SET on_disk=0 WHERE number=#{file_to_consider[0]}")
+                    puts("Marked file #{file_to_consider[1]} as not on disk.".color(CC::BLUE))
+                end
             end
         end
     end
@@ -324,7 +330,7 @@ def add_fileset(db, args)
 
     paths.each() do |path|
         absolute_path = File.expand_path(path)
-        db.execute("INSERT INTO paths(fileset_number, path) VALUES(#{fileset_number}, \"#{path}\")")
+        db.execute("INSERT INTO paths(fileset_number, path) VALUES(#{fileset_number}, \"#{absolute_path}\")")
         update_fileset_path(db, fileset_number, absolute_path)
     end
 end
@@ -352,8 +358,8 @@ def add_paths(db, args)
 
     paths.each() do |path|
         absolute_path = File.expand_path(path)
-        db.execute("INSERT INTO paths(fileset_number, path) VALUES(#{fileset_number}, \"#{path}\")")
-        update_fileset_path(db, fileset_number, absolute_path)
+        db.execute("INSERT INTO paths(fileset_number, path) VALUES(#{fileset_number}, \"#{absolute_path}\")")
+        update_fileset_path(db, fileset_number, path)
     end
 end
 
@@ -549,7 +555,7 @@ def summary(db)
 
         puts("Backup set #{name}:".color(CC::BLUE))
         fileset_file_sizes = db.execute("SELECT size FROM files LEFT JOIN file_fileset_links ON " +
-            "file_fileset_links.file_number=files.number WHERE fileset_number=#{fileset_number}")
+            "file_fileset_links.file_number=files.number WHERE fileset_number=#{fileset_number} AND on_disk = 1")
         fileset_size = 0
         fileset_file_sizes.each() do |filesize|
             fileset_size += filesize[0]
@@ -557,7 +563,7 @@ def summary(db)
 
         files_not_written = db.execute("SELECT size FROM files LEFT JOIN file_fileset_links ON " +
             "file_fileset_links.file_number=files.number WHERE file_fileset_links.fileset_number=#{fileset_number} " +
-            "AND number NOT IN (SELECT files.number FROM files LEFT JOIN file_tarball_links ON " +
+            "AND on_disk = 1 AND number NOT IN (SELECT files.number FROM files LEFT JOIN file_tarball_links ON " +
             "file_tarball_links.file_number=files.number LEFT JOIN tarballs ON " +
             "tarballs.number=file_tarball_links.tarball_number LEFT JOIN tapes ON tapes.number=tarballs.tape_number " +
             "LEFT JOIN backups ON backups.number=tapes.backup_number WHERE backup_number=#{number})")
@@ -630,13 +636,23 @@ def write(db, args)
     end
     tape_number = tape[0]
 
-    files_to_write = db.execute("SELECT number, path, size FROM files LEFT JOIN file_fileset_links ON " +
+    files_to_consider = db.execute("SELECT number, path, size FROM files LEFT JOIN file_fileset_links ON " +
         "file_fileset_links.file_number=files.number WHERE file_fileset_links.fileset_number=#{fileset_number} AND " +
-        "number NOT IN (SELECT files.number FROM files LEFT JOIN file_tarball_links ON " +
+        "on_disk = 1 AND number NOT IN (SELECT files.number FROM files LEFT JOIN file_tarball_links ON " +
         "file_tarball_links.file_number=files.number LEFT JOIN tarballs ON " +
         "tarballs.number=file_tarball_links.tarball_number LEFT JOIN tapes ON tapes.number=tarballs.tape_number " +
         "LEFT JOIN backups ON backups.number=tapes.backup_number WHERE backup_number=#{backup_number}) ORDER BY path " +
         "ASC")
+
+    files_to_write = []
+    files_to_consider.each() do |file|
+        if (File.exists?(file[1]))
+            files_to_write << file
+        else
+            puts('There are files labeled as on disk that do not exist. Update the fileset first.'.color(CC::RED))
+            return
+        end
+    end
 
     if (files_to_write.length() == 0)
         puts('There are no files to be written in this backup set.'.color(CC::GREEN))
@@ -784,7 +800,7 @@ begin
     if (db.execute('SELECT name FROM sqlite_master WHERE type="table" AND name="version"').empty?())
         # Create new db.
         db.execute('CREATE TABLE files(number INTEGER PRIMARY KEY, path TEXT NOT NULL, sha1 TEXT NOT NULL, mtime ' +
-            'INTEGER NOT NULL, size INTEGER NOT NULL)')
+            'INTEGER NOT NULL, size INTEGER NOT NULL, on_disk INTEGER NOT NULL)')
         db.execute('CREATE TABLE filesets(number INTEGER PRIMARY KEY, name TEXT NOT NULL)')
         db.execute('CREATE TABLE file_fileset_links(file_number INTEGER NOT NULL, fileset_number INTEGER NOT NULL)')
         db.execute('CREATE TABLE backups(number INTEGER PRIMARY KEY, fileset_number INTEGER NOT NULL, name TEXT NOT ' +
@@ -797,21 +813,21 @@ begin
             'NULL, size INTEGER NOT NULL, files INTEGER NOT NULL, overhead INTEGER NOT NULL, written INTEGER NOT NULL)')
         db.execute('CREATE TABLE version(version INTEGER NOT NULL)')
         db.execute('CREATE TABLE file_tarball_links(file_number INTEGER NOT NULL, tarball_number INTEGER NOT NULL)')
-        db.execute('INSERT INTO version(version) values(5)')
+        db.execute('INSERT INTO version(version) values(6)')
 
         puts('New database created.'.color(CC::YELLOW))
         version = 5
     else
         # Check db version.
         version = db.get_first_value('SELECT version FROM version;')
-        if (version != 5)
+        if (version != 6)
             puts('Incompatible database version'.color(CC::RED))
             exit(-1)
         end
     end
 
-    puts("Backuptool [tool V4, database V#{version}]".color(CC::CYAN))
-    puts("  Copyright 2018-2019 Erik Van Hamme (erik.vanhamme@gmail.com)".color(CC::CYAN))
+    puts("Backuptool [tool V5, database V#{version}]".color(CC::CYAN))
+    puts("  Copyright 2018-2020 Erik Van Hamme (erik.vanhamme@gmail.com)".color(CC::CYAN))
 
     args = ARGV
 
