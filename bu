@@ -197,16 +197,40 @@ end
 def update_fileset_path(db, fileset_number, path)
     fileset_name = db.get_first_value("SELECT name FROM filesets WHERE number=#{fileset_number}")
 
-    # Step 1: Go through filesystem and check each file if it must be added or updated.
+    # Step 1: Collect data and store it in memory for performance on big filesets.
+    files = {}
+    files_db = db.execute("SELECT number, path, size, mtime, on_disk FROM files WHERE path LIKE \"#{path}%\"")
+    files_db.each() do |file|
+        if (files[file[1]].nil?())
+            files[file[1]] = []
+        end
+
+        files[file[1]] << { :number => file[0], :size => file[2], :mtime => file[3], :on_disk => file[4] }
+    end
+
+    links = {}
+    links_db = db.execute("SELECT file_number, fileset_number FROM file_fileset_links WHERE fileset_number=" +
+        "#{fileset_number}")
+    links_db.each() do |link|
+        links[link[0]] = link[1]
+    end
+
+    # Step 2: Go through filesystem and check each file if it must be added or updated.
     Find.find(path) do |filename|
         if (File.file?(filename))
             filesize = File.size(filename)
             mtime = File.mtime(filename).to_i()
 
             # Check if a matching file is in the database.
-            number = db.get_first_value("SELECT number FROM files WHERE size=#{filesize} AND mtime=#{mtime} AND " +
-                "path=\"#{filename}\"")
-                
+            number = nil
+            variants = files[filename]
+            variants.each() do |variant|
+                if ((variant[:size] == filesize) && (variant[:mtime] == mtime))
+                    number = variant[:number]
+                    break
+                end
+            end unless (variants.nil?())
+
             if (number.nil?())
                 sha1 = sha1(filename)
 
@@ -232,9 +256,8 @@ def update_fileset_path(db, fileset_number, path)
             end
 
             # Check if properly linked.
-            link = db.get_first_value("SELECT COUNT(*) FROM file_fileset_links WHERE file_number=#{number} AND " +
-                "fileset_number=#{fileset_number}")
-            if (link == 0)
+            link = links[number]
+            if (link.nil?())
                 db.execute("INSERT INTO file_fileset_links (file_number, fileset_number) VALUES(#{number}, " +
                     "#{fileset_number})")
                 puts("Added file #{filename} to fileset #{fileset_name}.".color(CC::BLUE))
@@ -242,7 +265,7 @@ def update_fileset_path(db, fileset_number, path)
         end
     end
 
-    # Step 2: Remove files in database that are no longer on disk and are not in a (relevant) tarball.
+    # Step 3: Remove files in database that are no longer on disk and are not in a (relevant) tarball.
     files_to_consider = db.execute("SELECT number, path, on_disk FROM files LEFT JOIN file_fileset_links ON " +
         "file_fileset_links.file_number=files.number WHERE fileset_number=#{fileset_number}")
     files_to_consider.each() do |file_to_consider|
