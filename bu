@@ -798,19 +798,28 @@ def write(db, args)
     
     overhead = bytes_written - file_size
 
+    db.transaction()
+
     db.execute("INSERT INTO tarballs(tape_number, idx, size, files, overhead, written) VALUES(#{tape_number}, " +
         "#{tarball_index}, #{file_size}, #{files_written.length()}, #{overhead}, #{Time.now().to_i()})")
 
     tarball_number = db.get_first_value("SELECT number FROM tarballs WHERE tape_number=#{tape_number} AND " +
         "idx=#{tarball_index}")
 
+    statement = db.prepare("INSERT INTO file_tarball_links(file_number, tarball_number) VALUES(?, #{tarball_number})")
+    result = nil
     files_written.each() do |file|
-        db.execute("INSERT INTO file_tarball_links(file_number, tarball_number) VALUES(#{file[0]}, #{tarball_number})")
+        result = statement.execute(file[0])
+    end
+    unless (result.nil?())
+        result.close()
     end
 
     if (full)
         db.execute("UPDATE tapes SET full=1 WHERE number=#{tape_number}")
     end
+
+    db.commit()
 
     puts("Finished write at #{Time.now().to_s()}.".color(CC::MAGENTA))
 
