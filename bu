@@ -15,6 +15,7 @@
 # limitations under the License.
 
 require 'digest/sha1'
+require 'fileutils'
 require 'find'
 require 'sqlite3'
 
@@ -195,6 +196,8 @@ def tape_size(label)
 end
 
 def update_fileset_path(db, fileset_number, path)
+    db.transaction()
+
     fileset_name = db.get_first_value("SELECT name FROM filesets WHERE number=#{fileset_number}")
 
     # Step 1: Collect data and store it in memory for performance on big filesets.
@@ -253,6 +256,9 @@ def update_fileset_path(db, fileset_number, path)
 
                 number = db.get_first_value("SELECT number FROM files WHERE size=#{filesize} AND mtime=#{mtime} AND " +
                     "path=\"#{filename}\"")
+            else
+                # Make sure the on_disk flag is set to 1.
+                db.execute("UPDATE files SET on_disk=1 WHERE number=#{number}")
             end
 
             # Check if properly linked.
@@ -298,6 +304,8 @@ def update_fileset_path(db, fileset_number, path)
             end
         end
     end
+
+    db.commit()
 end
 
 #----------------------------------------------------------------------------------------------------------------------
@@ -508,7 +516,7 @@ def manifest(db, args)
         puts('File list:'.color(CC::MAGENTA))
 
         files = db.execute("SELECT files.path, files.size FROM files LEFT JOIN file_tarball_links ON " +
-            "file_tarball_links.file_number=files.number WHERE tarball_number=#{tarball[0]}")
+            "file_tarball_links.file_number=files.number WHERE tarball_number=#{tarball[0]} ORDER BY files.path ASC")
 
         files.each() do |file|
             puts("    #{file[0]} (#{file[1]} bytes)".color(CC::CYAN))
@@ -623,8 +631,7 @@ def summary(db)
                 idx, size, files, overhead, written = tarball
 
                 puts(("    Tarball #{idx} stores #{files} files in #{size} bytes with #{overhead} bytes of " +
-                    "overhead.").color(CC::YELLOW))
-                puts("      Written at #{Time.at(written)}.".color(CC::YELLOW))
+                    "overhead. (Written #{Time.at(written)})").color(CC::YELLOW))
             end
         end
     end unless (backups.nil?())
@@ -691,6 +698,9 @@ def write(db, args)
         tarball_index += 1
     end
 
+    deleted_files = db.execute("SELECT path FROM files LEFT JOIN file_fileset_links ON file_number=number WHERE " +
+        "on_disk=0")
+
     # Set correct blocksize.
     block_size = 8192 * 512 # 4MB blocks.
     result = `mt-st -f #{device} setblk #{block_size} 2>&1`
@@ -718,7 +728,25 @@ def write(db, args)
     end
 
     begin
+        deletelist_name = "/tmp/deletes #{Time.now().to_s()}.sh".gsub(/ /, '_')
+        deletelist = File.open(deletelist_name, 'wb')
+
+        deletelist.puts("#!/bin/bash\nfiles=\"")
+
+        deleted_files.each() do |deleted_file|
+            deletelist.puts("..#{deleted_file[0]}")
+        end
+
+        deletelist.puts("\"\nfor file in $files\ndo\n\tif [ -e $file ]\n\tthen\n\t\trm $file\n\tfi\ndone")
+        deletelist.puts('echo It may be a good idea to find and delete empty directories now.')
+
+        deletelist.close()
+        FileUtils.chmod("ugo=wrx", deletelist_name)
+
+        deletelist_size = File.size(deletelist_name)
+
         filelist = File.open('filelist.txt', 'wb')
+        filelist.puts(deletelist_name.sub(/^\//, ''))
 
         files_to_write.each() do |file|
             relative_filename = file[1].sub(/^\//, '')
@@ -756,11 +784,17 @@ def write(db, args)
             return
         end
     rescue IOError => e
-        puts("Could not write filelist due to IOError: #{e.to_s()}.")
+        puts("Could not write filelist/deletelist due to IOError: #{e.to_s()}.")
         return
     ensure
+        deletelist.close() unless (deletelist.nil?())
         filelist.close() unless (filelist.nil?())
-        File.delete('filelist.txt')
+        if (File.exists?(deletelist_name))
+            File.delete(deletelist_name)
+        end
+        if (File.exists?('filelist.txt'))
+            File.delete('filelist.txt')
+        end
     end
 
     # Rewind.
@@ -773,6 +807,10 @@ def write(db, args)
     puts("Finished tape activity at #{Time.now().to_s()}.".color(CC::MAGENTA))
 
     if (full)
+        # Removing the written size of the delete list from the number of written bytes.
+        deletelist_size_on_tape = (3 * 512) + deletelist_size + (deletelist_size % 512)
+        bytes_written -= deletelist_size_on_tape
+
         # Determine how far we got if the tape was full.
         files_written = []
         sum = 0
