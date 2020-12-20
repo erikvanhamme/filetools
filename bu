@@ -1,6 +1,6 @@
 #!/usr/bin/ruby
 
-# Copyright 2018-2019 Erik Van Hamme (erik.vanhamme@gmail.com)
+# Copyright 2018-2020 Erik Van Hamme (erik.vanhamme@gmail.com)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may NOT use this file except in compliance with the License.
@@ -15,6 +15,7 @@
 # limitations under the License.
 
 require 'digest/sha1'
+require 'fileutils'
 require 'find'
 require 'sqlite3'
 
@@ -195,18 +196,44 @@ def tape_size(label)
 end
 
 def update_fileset_path(db, fileset_number, path)
+    db.transaction()
+
     fileset_name = db.get_first_value("SELECT name FROM filesets WHERE number=#{fileset_number}")
 
-    # Step 1: Go through filesystem and check each file if it must be added or updated.
+    # Step 1: Collect data and store it in memory for performance on big filesets.
+    files = {}
+    files_db = db.execute("SELECT number, path, size, mtime, on_disk FROM files WHERE path LIKE \"#{path}%\"")
+    files_db.each() do |file|
+        if (files[file[1]].nil?())
+            files[file[1]] = []
+        end
+
+        files[file[1]] << { :number => file[0], :size => file[2], :mtime => file[3], :on_disk => file[4] }
+    end
+
+    links = {}
+    links_db = db.execute("SELECT file_number, fileset_number FROM file_fileset_links WHERE fileset_number=" +
+        "#{fileset_number}")
+    links_db.each() do |link|
+        links[link[0]] = link[1]
+    end
+
+    # Step 2: Go through filesystem and check each file if it must be added or updated.
     Find.find(path) do |filename|
         if (File.file?(filename))
             filesize = File.size(filename)
             mtime = File.mtime(filename).to_i()
 
             # Check if a matching file is in the database.
-            number = db.get_first_value("SELECT number FROM files WHERE size=#{filesize} AND mtime=#{mtime} AND " +
-                "path=\"#{filename}\"")
-                
+            number = nil
+            variants = files[filename]
+            variants.each() do |variant|
+                if ((variant[:size] == filesize) && (variant[:mtime] == mtime))
+                    number = variant[:number]
+                    break
+                end
+            end unless (variants.nil?())
+
             if (number.nil?())
                 sha1 = sha1(filename)
 
@@ -217,24 +244,26 @@ def update_fileset_path(db, fileset_number, path)
 
                 if (update_number.nil?())
                     # Nothing to update, add it.
-                    ret = db.execute("INSERT INTO files(path, sha1, mtime, size) VALUES(\"#{filename}\", \"#{sha1}\", " +
-                        "#{mtime}, #{filesize})")
+                    ret = db.execute("INSERT INTO files(path, sha1, mtime, size, on_disk) VALUES(\"#{filename}\", " +
+                        "\"#{sha1}\", #{mtime}, #{filesize}, 1)")
                     puts("Added file #{filename} to database.".color(CC::BLUE))
                 else
                     # Update file with matching path that is not in tarball.
-                    db.execute("UPDATE files SET sha1=\"#{sha1}\", mtime=#{mtime}, size=#{filesize} WHERE " +
-                        "number=#{update_number}")
+                    db.execute("UPDATE files SET sha1=\"#{sha1}\", mtime=#{mtime}, size=#{filesize}, on_disk = 1 " +
+                        " WHERE number=#{update_number}")
                     puts("Updated file #{filename} in database.".color(CC::BLUE))
                 end
 
                 number = db.get_first_value("SELECT number FROM files WHERE size=#{filesize} AND mtime=#{mtime} AND " +
                     "path=\"#{filename}\"")
+            else
+                # Make sure the on_disk flag is set to 1.
+                db.execute("UPDATE files SET on_disk=1 WHERE number=#{number}")
             end
 
             # Check if properly linked.
-            link = db.get_first_value("SELECT COUNT(*) FROM file_fileset_links WHERE file_number=#{number} AND " +
-                "fileset_number=#{fileset_number}")
-            if (link == 0)
+            link = links[number]
+            if (link.nil?())
                 db.execute("INSERT INTO file_fileset_links (file_number, fileset_number) VALUES(#{number}, " +
                     "#{fileset_number})")
                 puts("Added file #{filename} to fileset #{fileset_name}.".color(CC::BLUE))
@@ -242,8 +271,8 @@ def update_fileset_path(db, fileset_number, path)
         end
     end
 
-    # Step 2: Remove files in database that are no longer on disk and are not in a (relevant) tarball.
-    files_to_consider = db.execute("SELECT number, path FROM files LEFT JOIN file_fileset_links ON " +
+    # Step 3: Remove files in database that are no longer on disk and are not in a (relevant) tarball.
+    files_to_consider = db.execute("SELECT number, path, on_disk FROM files LEFT JOIN file_fileset_links ON " +
         "file_fileset_links.file_number=files.number WHERE fileset_number=#{fileset_number}")
     files_to_consider.each() do |file_to_consider|
         unless (File.exists?(file_to_consider[1]))
@@ -261,14 +290,22 @@ def update_fileset_path(db, fileset_number, path)
 
             # Check if this file appears in any other tarball.
             # If not, remove the file from the database.
+            # If yes, mark as not on disk.
             in_tarballs = db.get_first_value("SELECT COUNT(*) FROM file_tarball_links WHERE " +
                 "file_number=#{file_to_consider[0]}")
             if (in_tarballs == 0)
                 db.execute("DELETE FROM files WHERE number=#{file_to_consider[0]}")
                 puts("Removed file #{file_to_consider[1]} from database.".color(CC::BLUE))
+            else
+                if (file_to_consider[2] != 0)
+                    db.execute("UPDATE files SET on_disk=0 WHERE number=#{file_to_consider[0]}")
+                    puts("Marked file #{file_to_consider[1]} as not on disk.".color(CC::BLUE))
+                end
             end
         end
     end
+
+    db.commit()
 end
 
 #----------------------------------------------------------------------------------------------------------------------
@@ -324,7 +361,7 @@ def add_fileset(db, args)
 
     paths.each() do |path|
         absolute_path = File.expand_path(path)
-        db.execute("INSERT INTO paths(fileset_number, path) VALUES(#{fileset_number}, \"#{path}\")")
+        db.execute("INSERT INTO paths(fileset_number, path) VALUES(#{fileset_number}, \"#{absolute_path}\")")
         update_fileset_path(db, fileset_number, absolute_path)
     end
 end
@@ -352,8 +389,8 @@ def add_paths(db, args)
 
     paths.each() do |path|
         absolute_path = File.expand_path(path)
-        db.execute("INSERT INTO paths(fileset_number, path) VALUES(#{fileset_number}, \"#{path}\")")
-        update_fileset_path(db, fileset_number, absolute_path)
+        db.execute("INSERT INTO paths(fileset_number, path) VALUES(#{fileset_number}, \"#{absolute_path}\")")
+        update_fileset_path(db, fileset_number, path)
     end
 end
 
@@ -479,7 +516,7 @@ def manifest(db, args)
         puts('File list:'.color(CC::MAGENTA))
 
         files = db.execute("SELECT files.path, files.size FROM files LEFT JOIN file_tarball_links ON " +
-            "file_tarball_links.file_number=files.number WHERE tarball_number=#{tarball[0]}")
+            "file_tarball_links.file_number=files.number WHERE tarball_number=#{tarball[0]} ORDER BY files.path ASC")
 
         files.each() do |file|
             puts("    #{file[0]} (#{file[1]} bytes)".color(CC::CYAN))
@@ -549,7 +586,7 @@ def summary(db)
 
         puts("Backup set #{name}:".color(CC::BLUE))
         fileset_file_sizes = db.execute("SELECT size FROM files LEFT JOIN file_fileset_links ON " +
-            "file_fileset_links.file_number=files.number WHERE fileset_number=#{fileset_number}")
+            "file_fileset_links.file_number=files.number WHERE fileset_number=#{fileset_number} AND on_disk = 1")
         fileset_size = 0
         fileset_file_sizes.each() do |filesize|
             fileset_size += filesize[0]
@@ -557,7 +594,7 @@ def summary(db)
 
         files_not_written = db.execute("SELECT size FROM files LEFT JOIN file_fileset_links ON " +
             "file_fileset_links.file_number=files.number WHERE file_fileset_links.fileset_number=#{fileset_number} " +
-            "AND number NOT IN (SELECT files.number FROM files LEFT JOIN file_tarball_links ON " +
+            "AND on_disk = 1 AND number NOT IN (SELECT files.number FROM files LEFT JOIN file_tarball_links ON " +
             "file_tarball_links.file_number=files.number LEFT JOIN tarballs ON " +
             "tarballs.number=file_tarball_links.tarball_number LEFT JOIN tapes ON tapes.number=tarballs.tape_number " +
             "LEFT JOIN backups ON backups.number=tapes.backup_number WHERE backup_number=#{number})")
@@ -594,8 +631,7 @@ def summary(db)
                 idx, size, files, overhead, written = tarball
 
                 puts(("    Tarball #{idx} stores #{files} files in #{size} bytes with #{overhead} bytes of " +
-                    "overhead.").color(CC::YELLOW))
-                puts("      Written at #{Time.at(written)}.".color(CC::YELLOW))
+                    "overhead. (Written #{Time.at(written)})").color(CC::YELLOW))
             end
         end
     end unless (backups.nil?())
@@ -630,13 +666,23 @@ def write(db, args)
     end
     tape_number = tape[0]
 
-    files_to_write = db.execute("SELECT number, path, size FROM files LEFT JOIN file_fileset_links ON " +
+    files_to_consider = db.execute("SELECT number, path, size FROM files LEFT JOIN file_fileset_links ON " +
         "file_fileset_links.file_number=files.number WHERE file_fileset_links.fileset_number=#{fileset_number} AND " +
-        "number NOT IN (SELECT files.number FROM files LEFT JOIN file_tarball_links ON " +
+        "on_disk = 1 AND number NOT IN (SELECT files.number FROM files LEFT JOIN file_tarball_links ON " +
         "file_tarball_links.file_number=files.number LEFT JOIN tarballs ON " +
         "tarballs.number=file_tarball_links.tarball_number LEFT JOIN tapes ON tapes.number=tarballs.tape_number " +
         "LEFT JOIN backups ON backups.number=tapes.backup_number WHERE backup_number=#{backup_number}) ORDER BY path " +
         "ASC")
+
+    files_to_write = []
+    files_to_consider.each() do |file|
+        if (File.exists?(file[1]))
+            files_to_write << file
+        else
+            puts('There are files labeled as on disk that do not exist. Update the fileset first.'.color(CC::RED))
+            return
+        end
+    end
 
     if (files_to_write.length() == 0)
         puts('There are no files to be written in this backup set.'.color(CC::GREEN))
@@ -651,6 +697,9 @@ def write(db, args)
     else
         tarball_index += 1
     end
+
+    deleted_files = db.execute("SELECT path FROM files LEFT JOIN file_fileset_links ON file_number=number WHERE " +
+        "on_disk=0")
 
     # Set correct blocksize.
     block_size = 8192 * 512 # 4MB blocks.
@@ -667,6 +716,8 @@ def write(db, args)
         return
     end
 
+    puts("Started tape activity at #{Time.now().to_s()}.".color(CC::MAGENTA))
+
     # Advance the tape to the correct file record.
     if (tarball_index > 0)
         result = `mt-st -f #{device} fsf #{tarball_index} 2>&1`
@@ -677,7 +728,25 @@ def write(db, args)
     end
 
     begin
+        deletelist_name = "/tmp/deletes #{Time.now().to_s()}.sh".gsub(/ /, '_')
+        deletelist = File.open(deletelist_name, 'wb')
+
+        deletelist.puts("#!/bin/bash\nfiles=\"")
+
+        deleted_files.each() do |deleted_file|
+            deletelist.puts("..#{deleted_file[0]}")
+        end
+
+        deletelist.puts("\"\nfor file in $files\ndo\n\tif [ -e $file ]\n\tthen\n\t\trm $file\n\tfi\ndone")
+        deletelist.puts('echo It may be a good idea to find and delete empty directories now.')
+
+        deletelist.close()
+        FileUtils.chmod("ugo=wrx", deletelist_name)
+
+        deletelist_size = File.size(deletelist_name)
+
         filelist = File.open('filelist.txt', 'wb')
+        filelist.puts(deletelist_name.sub(/^\//, ''))
 
         files_to_write.each() do |file|
             relative_filename = file[1].sub(/^\//, '')
@@ -715,14 +784,33 @@ def write(db, args)
             return
         end
     rescue IOError => e
-        puts("Could not write filelist due to IOError: #{e.to_s()}.")
+        puts("Could not write filelist/deletelist due to IOError: #{e.to_s()}.")
         return
     ensure
+        deletelist.close() unless (deletelist.nil?())
         filelist.close() unless (filelist.nil?())
-        File.delete('filelist.txt')
+        if (File.exists?(deletelist_name))
+            File.delete(deletelist_name)
+        end
+        if (File.exists?('filelist.txt'))
+            File.delete('filelist.txt')
+        end
     end
 
+    # Rewind.
+    result = `mt-st -f #{device} rewind 2>&1`
+    unless ($?.success?())
+        puts("Could not rewind: mt-st error: #{result}".color(CC::RED))
+        return
+    end
+
+    puts("Finished tape activity at #{Time.now().to_s()}.".color(CC::MAGENTA))
+
     if (full)
+        # Removing the written size of the delete list from the number of written bytes.
+        deletelist_size_on_tape = (3 * 512) + deletelist_size + (deletelist_size % 512)
+        bytes_written -= deletelist_size_on_tape
+
         # Determine how far we got if the tape was full.
         files_written = []
         sum = 0
@@ -748,26 +836,28 @@ def write(db, args)
     
     overhead = bytes_written - file_size
 
+    db.transaction()
+
     db.execute("INSERT INTO tarballs(tape_number, idx, size, files, overhead, written) VALUES(#{tape_number}, " +
         "#{tarball_index}, #{file_size}, #{files_written.length()}, #{overhead}, #{Time.now().to_i()})")
 
     tarball_number = db.get_first_value("SELECT number FROM tarballs WHERE tape_number=#{tape_number} AND " +
         "idx=#{tarball_index}")
 
+    statement = db.prepare("INSERT INTO file_tarball_links(file_number, tarball_number) VALUES(?, #{tarball_number})")
+    result = nil
     files_written.each() do |file|
-        db.execute("INSERT INTO file_tarball_links(file_number, tarball_number) VALUES(#{file[0]}, #{tarball_number})")
+        result = statement.execute(file[0])
+    end
+    unless (result.nil?())
+        result.close()
     end
 
     if (full)
         db.execute("UPDATE tapes SET full=1 WHERE number=#{tape_number}")
     end
 
-    # Rewind.
-    result = `mt-st -f #{device} rewind 2>&1`
-    unless ($?.success?())
-        puts("Could not rewind: mt-st error: #{result}".color(CC::RED))
-        return
-    end
+    db.commit()
 
     puts("Finished write at #{Time.now().to_s()}.".color(CC::MAGENTA))
 
@@ -784,7 +874,7 @@ begin
     if (db.execute('SELECT name FROM sqlite_master WHERE type="table" AND name="version"').empty?())
         # Create new db.
         db.execute('CREATE TABLE files(number INTEGER PRIMARY KEY, path TEXT NOT NULL, sha1 TEXT NOT NULL, mtime ' +
-            'INTEGER NOT NULL, size INTEGER NOT NULL)')
+            'INTEGER NOT NULL, size INTEGER NOT NULL, on_disk INTEGER NOT NULL)')
         db.execute('CREATE TABLE filesets(number INTEGER PRIMARY KEY, name TEXT NOT NULL)')
         db.execute('CREATE TABLE file_fileset_links(file_number INTEGER NOT NULL, fileset_number INTEGER NOT NULL)')
         db.execute('CREATE TABLE backups(number INTEGER PRIMARY KEY, fileset_number INTEGER NOT NULL, name TEXT NOT ' +
@@ -797,21 +887,21 @@ begin
             'NULL, size INTEGER NOT NULL, files INTEGER NOT NULL, overhead INTEGER NOT NULL, written INTEGER NOT NULL)')
         db.execute('CREATE TABLE version(version INTEGER NOT NULL)')
         db.execute('CREATE TABLE file_tarball_links(file_number INTEGER NOT NULL, tarball_number INTEGER NOT NULL)')
-        db.execute('INSERT INTO version(version) values(5)')
+        db.execute('INSERT INTO version(version) values(6)')
 
         puts('New database created.'.color(CC::YELLOW))
         version = 5
     else
         # Check db version.
         version = db.get_first_value('SELECT version FROM version;')
-        if (version != 5)
+        if (version != 6)
             puts('Incompatible database version'.color(CC::RED))
             exit(-1)
         end
     end
 
-    puts("Backuptool [tool V4, database V#{version}]".color(CC::CYAN))
-    puts("  Copyright 2018-2019 Erik Van Hamme (erik.vanhamme@gmail.com)".color(CC::CYAN))
+    puts("Backuptool [tool V5, database V#{version}]".color(CC::CYAN))
+    puts("  Copyright 2018-2020 Erik Van Hamme (erik.vanhamme@gmail.com)".color(CC::CYAN))
 
     args = ARGV
 
