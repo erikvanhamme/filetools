@@ -226,7 +226,7 @@ end
 # Photos method section
 
 def exiv2_time_photo(photo)
-    exif = `exiv2 #{photo}`
+    exif = `exiv2 "#{photo}"`
   
     time = exif.match(/Image timestamp.*$/)
     time = time.to_s().sub(/.*: /, '')

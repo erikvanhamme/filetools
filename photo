@@ -656,6 +656,8 @@ begin
     when '--import'
         if args.length() == 2
             import(db, args[0], args[1])
+        elsif args.length() == 3
+            import(db, args[0], args[1], args[2], args[2])
         elsif args.length() == 4
             import(db, args[0], args[1], args[2], args[3])
         else
