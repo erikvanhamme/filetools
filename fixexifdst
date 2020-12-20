@@ -56,7 +56,7 @@ def find_photos(folder)
     photos = []
     if File.exist?(folder) && File.directory?(folder)
         Find.find(folder) do |path|
-            if (path.downcase() =~ /.*\.nef$/)
+            if (path.downcase() =~ /.*\.jpg$/) || (path.downcase() =~ /.*\.nef$/) 
                 photos << path
             end
         end
@@ -72,13 +72,15 @@ def usage()
     puts("Usage: ./fixexifdst --fix folder timezone")
 end
 
-def check(args)
+def process(args, fix = false)
     if (args.length != 2) || !(File.exist?(args[0]) && File.directory?(args[0])) # TODO: validate timezone argument.
-        puts("Usage: ./fixexifdst --check folder timezone")
+        if (fix)
+            puts("Usage: ./fixexifdst --fix folder timezone")
+        else
+            puts("Usage: ./fixexifdst --check folder timezone")
+        end
         return
     end
-
-    output = []
 
     photos = find_photos(args[0])
 
@@ -118,44 +120,28 @@ def check(args)
                 puts("File #{photo} is not taken in DST and is set to DST. Should subtract 1 hour from timestamp.".color(CC::YELLOW))
                 time -= 3600
             end
-            output << {:photo => photo, :time => time}
+
+            if (fix)
+                if (time.dst?())
+                    dst_val = 1
+                else
+                    dst_val = 0
+                end
+        
+                time_val = time.strftime("%Y:%m:%d %H:%M:%S")
+        
+                cmd = "exiv2 -M\"set Exif.NikonWt.DaylightSavings #{dst_val}\" -M\"set Exif.Image.DateTime #{time_val}\" "
+                cmd += "-M\"set Exif.Photo.DateTimeOriginal #{time_val}\" -M\"set Exif.Photo.DateTimeDigitized #{time_val}\" #{photo}"
+        
+                result = `#{cmd}`
+                if result.nil? || result == ""
+                    puts("Fixed.".color(CC::GREEN))
+                end
+            end
         end
     end
 
     ENV['TZ'] = nil
-
-    return output
-end
-
-def fix(args)
-    if (args.length != 2) || !(File.exist?(args[0]) && File.directory?(args[0])) # TODO: validate timezone argument.
-        puts("Usage: ./fixexifdst --fix folder timezone")
-        return
-    end
-
-    fixes = check(args)
-
-    fixes.each do |fix|
-        photo = fix[:photo]
-        time = fix[:time]
-
-        if (time.dst?())
-            dst_val = 1
-        else
-            dst_val = 0
-        end
-
-        time_val = time.strftime("%Y:%m:%d %H:%M:%S")
-        puts time_val
-
-        cmd = "exiv2 -M\"set Exif.NikonWt.DaylightSavings #{dst_val}\" -M\"set Exif.Image.DateTime #{time_val}\" "
-        cmd += "-M\"set Exif.Photo.DateTimeOriginal #{time_val}\" -M\"set Exif.Photo.DateTimeDigitized #{time_val}\" #{photo}"
-        puts cmd
-
-        result = `#{cmd}`
-        puts result
-    end
-    # TODO: Implement me.
 end
 
 #-----------------------------------------------------------------------------------------------------------------------
@@ -176,9 +162,9 @@ args = args[1..(args.length() - 1)]
 
 case action
 when '--check'
-    check(args)
+    process(args)
 when '--fix'
-    fix(args)
+    process(args, true)
 else
     usage()
     exit(0)
