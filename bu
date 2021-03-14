@@ -1,6 +1,6 @@
 #!/usr/bin/ruby
 
-# Copyright 2018-2020 Erik Van Hamme (erik.vanhamme@gmail.com)
+# Copyright 2018-2021 Erik Van Hamme (erik.vanhamme@gmail.com)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may NOT use this file except in compliance with the License.
@@ -211,17 +211,82 @@ def update_fileset_path(db, fileset_number, path)
         files[file[1]] << { :number => file[0], :size => file[2], :mtime => file[3], :on_disk => file[4] }
     end
 
-    links = {}
-    links_db = db.execute("SELECT file_number, fileset_number FROM file_fileset_links WHERE fileset_number=" +
+    file_links = {}
+    file_links_db = db.execute("SELECT file_number, fileset_number FROM file_fileset_links WHERE fileset_number=" +
         "#{fileset_number}")
-    links_db.each() do |link|
-        links[link[0]] = link[1]
+    file_links_db.each() do |file_link|
+        file_links[file_link[0]] = file_link[1]
     end
 
-    # Step 2: Go through filesystem and check each file if it must be added or updated.
+    symlinks = {}
+    symlinks_db = db.execute("SELECT number, path, target, on_disk FROM symlinks WHERE path LIKE \"#{path}%\"")
+    symlinks_db.each() do |symlink|
+        if (symlinks[symlink[1]].nil?())
+            symlinks[symlink[1]] = []
+        end
+
+        symlinks[symlink[1]] << { :number => symlink[0], :target => symlink[2], :on_disk => symlink[3] }
+    end
+
+    symlink_links = {}
+    symlink_links_db = db.execute("SELECT symlink_number, fileset_number FROM symlink_fileset_links WHERE " +
+        "fileset_number=#{fileset_number}")
+    symlink_links_db.each() do |symlink_link|
+        symlink_links[symlink_link[0]] = symlink_link[1]
+    end
+
+    # Step 2: Go through filesystem.
     Find.find(path) do |filename|
-        if (File.file?(filename))
-            filesize = File.size(filename)
+        if (File.symlink?(filename))
+            # Check if symlink must be added or updated.
+            target = File.readlink(filename)
+
+            # Check if a matching symlink is in the database.
+            number = nil
+            variants = symlinks[filename]
+            variants.each() do |variant|
+                if (variant[:target] == target)
+                    number = variant[:number]
+                    break
+                end
+            end unless (variants.nil?())
+
+            if (number.nil?())
+                # Symlink is not in DB with current target. Check if a matching path exists that is not in a 
+                # tarball.
+                update_number = db.get_first_value("SELECT number FROM symlinks LEFT JOIN symlink_tarball_links ON " +
+                    "symlink_number=number WHERE path=\"#{filename}\" AND tarball_number IS NULL")
+
+                if (update_number.nil?())
+                    # Nothing to update, add it.
+                    db.execute("INSERT INTO symlinks(path, target, on_disk) VALUES (\"#{filename}\", \"#{target}\", 1)")
+                    puts("Added symlink #{filename} to database.".color(CC::BLUE))
+                else
+                    # Update symlink with matching path that is not in tarball.
+                    db.execute("UPDATE symlinks SET target=\"#{target}\", on_disk=1 WHERE number=#{update_number}")
+                    puts("Updated symlink #{filename} in database.".color(CC::BLUE))
+                end
+
+                number = db.get_first_value("SELECT number FROM symlinks WHERE target=\"#{target}\" AND path=\"#{filename}\"")
+            else
+                # Make sure the on_disk flag is set to 1.
+                db.execute("UPDATE symlinks SET on_disk=1 WHERE number=#{number}")
+            end
+
+            # Check if properly linked.
+            symlink_link = symlink_links[number]
+            if (symlink_link.nil?())
+                db.execute("INSERT INTO symlink_fileset_links (symlink_number, fileset_number) VALUES(#{number}, " +
+                    "#{fileset_number})")
+                puts("Added symlink #{filename} to fileset #{fileset_name}.".color(CC::BLUE))
+            end
+        else
+            # Check if file must be added or updated.
+            if (File.directory?(filename))
+                filesize = 0
+            else
+                filesize = File.size(filename)
+            end
             mtime = File.mtime(filename).to_i()
 
             # Check if a matching file is in the database.
@@ -235,7 +300,11 @@ def update_fileset_path(db, fileset_number, path)
             end unless (variants.nil?())
 
             if (number.nil?())
-                sha1 = sha1(filename)
+                if (File.directory?(filename))
+                    sha1 = ""
+                else
+                    sha1 = sha1(filename)
+                end
 
                 # File is not in DB with current mtime and size. Check if a matching path exists that is not in a 
                 # tarball.
@@ -244,7 +313,7 @@ def update_fileset_path(db, fileset_number, path)
 
                 if (update_number.nil?())
                     # Nothing to update, add it.
-                    ret = db.execute("INSERT INTO files(path, sha1, mtime, size, on_disk) VALUES(\"#{filename}\", " +
+                    db.execute("INSERT INTO files(path, sha1, mtime, size, on_disk) VALUES(\"#{filename}\", " +
                         "\"#{sha1}\", #{mtime}, #{filesize}, 1)")
                     puts("Added file #{filename} to database.".color(CC::BLUE))
                 else
@@ -262,8 +331,8 @@ def update_fileset_path(db, fileset_number, path)
             end
 
             # Check if properly linked.
-            link = links[number]
-            if (link.nil?())
+            file_link = file_links[number]
+            if (file_link.nil?())
                 db.execute("INSERT INTO file_fileset_links (file_number, fileset_number) VALUES(#{number}, " +
                     "#{fileset_number})")
                 puts("Added file #{filename} to fileset #{fileset_name}.".color(CC::BLUE))
@@ -300,6 +369,40 @@ def update_fileset_path(db, fileset_number, path)
                 if (file_to_consider[2] != 0)
                     db.execute("UPDATE files SET on_disk=0 WHERE number=#{file_to_consider[0]}")
                     puts("Marked file #{file_to_consider[1]} as not on disk.".color(CC::BLUE))
+                end
+            end
+        end
+    end
+
+    # Step 4: Remove symlinks in database that are no longer on disk and are not in a (relevant) tarball.
+    symlinks_to_consider = db.execute("SELECT number, path, on_disk FROM symlinks LEFT JOIN symlink_fileset_links ON " +
+        "symlink_fileset_links.symlink_number=symlinks.number WHERE fileset_number=#{fileset_number}")
+    symlinks_to_consider.each() do |symlink_to_consider|
+        unless (File.exists?(symlink_to_consider[1]))
+            # Check if this symlink appears in a tarball linked to this fileset.
+            # If symlink is not in any relevant tarball(s). Unlink from fileset.
+            in_tarballs = db.get_first_value("SELECT COUNT(*) FROM symlink_tarball_links WHERE " +
+                "symlink_number=#{symlink_to_consider[0]} AND tarball_number IN (SELECT tarballs.number FROM tarballs " +
+                "LEFT JOIN tapes ON tapes.number=tarballs.tape_number LEFT JOIN backups ON " +
+                "backups.number=tapes.backup_number WHERE fileset_number=#{fileset_number})")
+            if (in_tarballs == 0)
+                db.execute("DELETE FROM symlink_fileset_links WHERE symlink_number=#{symlink_to_consider[0]} AND " +
+                    "fileset_number=#{fileset_number}")
+                puts("Removed symlink #{symlink_to_consider[1]} from fileset #{fileset_name}.".color(CC::BLUE))
+            end
+
+            # Check if this symlink appears in any other tarball.
+            # If not, remove the symlink from the database.
+            # If yes, mark as not on disk.
+            in_tarballs = db.get_first_value("SELECT COUNT(*) FROM symlink_tarball_links WHERE " +
+                "symlink_number=#{symlink_to_consider[0]}")
+            if (in_tarballs == 0)
+                db.execute("DELETE FROM symlinks WHERE number=#{symlink_to_consider[0]}")
+                puts("Removed symlink #{symlink_to_consider[1]} from database.".color(CC::BLUE))
+            else
+                if (symlink_to_consider[2] != 0)
+                    db.execute("UPDATE symlinks SET on_disk=0 WHERE number=#{symlink_to_consider[0]}")
+                    puts("Marked symlink #{symlink_to_consider[1]} as not on disk.".color(CC::BLUE))
                 end
             end
         end
@@ -498,11 +601,11 @@ def manifest(db, args)
         "tapes LEFT JOIN backups ON backups.number=tapes.backup_number WHERE label=\"#{tape_label}\"")
     tape_number = tape[5]
 
-    tarballs = db.execute("SELECT number, idx, size, files, overhead, written FROM tarballs WHERE " +
+    tarballs = db.execute("SELECT number, idx, size, files, symlinks, overhead, written FROM tarballs WHERE " +
         "tape_number=#{tape_number}")
 
     puts("Begin tape #{tape[0]} manifest:".color(CC::BLUE))
-    puts("    Tape is has index #{tape[3]} in backup set #{tape[4]}.".color(CC::BLUE))
+    puts("    Tape has index #{tape[3]} in backup set #{tape[4]}.".color(CC::BLUE))
     puts("    Tape has a size of #{tape[1]} and is #{tape[2] == 0 ? 'not ' : ''}full.".color(CC::BLUE))
     puts(("    There #{tarballs.length() == 1? 'is' : 'are'} #{tarballs.length()} " +
         "tarball#{tarballs.length() == 1 ? '' : 's'} on the tape.").color(CC::BLUE))
@@ -510,16 +613,27 @@ def manifest(db, args)
     total_size = 0
 
     tarballs.each() do |tarball|
-        puts("Tarball #{tarball[1]} written at #{Time.at(tarball[5])} contains #{tarball[3]} files.".color(CC::MAGENTA))
-        puts(("Tarball has a total size of #{tarball[2]} bytes with an observed overhead of #{tarball[4]} " +
+        puts("Tarball #{tarball[1]} written at #{Time.at(tarball[6])} contains #{tarball[3]} files and #{tarball[4]} symlinks.".color(CC::MAGENTA))
+        puts(("Tarball has a total size of #{tarball[2]} bytes with an observed overhead of #{tarball[5]} " +
             "bytes.").color(CC::MAGENTA))
         puts('File list:'.color(CC::MAGENTA))
 
-        files = db.execute("SELECT files.path, files.size FROM files LEFT JOIN file_tarball_links ON " +
+        files = db.execute("SELECT files.path, files.size, files.sha1 FROM files LEFT JOIN file_tarball_links ON " +
             "file_tarball_links.file_number=files.number WHERE tarball_number=#{tarball[0]} ORDER BY files.path ASC")
 
         files.each() do |file|
-            puts("    #{file[0]} (#{file[1]} bytes)".color(CC::CYAN))
+            type = ""
+            if (file[2] == "")
+                type = " [Directory]"
+            end
+            puts("    #{file[0]}#{type} (#{file[1]} bytes)".color(CC::CYAN))
+        end
+
+        symlinks = db.execute("SELECT symlinks.path FROM symlinks LEFT JOIN symlink_tarball_links ON " +
+            "symlink_tarball_links.symlink_number=symlinks.number WHERE tarball_number=#{tarball[0]} ORDER BY symlinks.path ASC")
+
+        symlinks.each() do |symlink|
+            puts("    #{symlink[0]} [Symlink] (0 bytes)".color(CC::CYAN))
         end
 
         total_size += tarball[2]
@@ -559,7 +673,10 @@ def remove_tapes(db, tapes)
                 # 1. Delete the file links
                 db.execute("DELETE FROM file_tarball_links WHERE tarball_number=#{tarball_number[0]}")
 
-                # 2. Delete tarball
+                # 2. Delete the symlink links
+                db.execute("DELETE FROM symlink_tarball_links WHERE tarball_number=#{tarball_number[0]}")
+
+                # 3. Delete tarball
                 db.execute("DELETE FROM tarballs WHERE number=#{tarball_number[0]}")
             end
 
@@ -608,6 +725,17 @@ def summary(db)
             puts(("  Status: There are #{files_not_written.length()} files not on tape in the backup set for a size " +
                 "of #{unwritten_size} bytes.").color(CC::RED))
         end
+        symlinks_not_written = db.get_first_value("SELECT count(*) FROM symlinks LEFT JOIN symlink_fileset_links ON " +
+            "symlink_fileset_links.symlink_number=symlinks.number WHERE symlink_fileset_links.fileset_number=#{fileset_number} " +
+            "AND on_disk = 1 AND number NOT IN (SELECT symlinks.number FROM symlinks LEFT JOIN symlink_tarball_links ON " +
+            "symlink_tarball_links.symlink_number=symlinks.number LEFT JOIN tarballs ON " +
+            "tarballs.number=symlink_tarball_links.tarball_number LEFT JOIN tapes ON tapes.number=tarballs.tape_number " +
+            "LEFT JOIN backups ON backups.number=tapes.backup_number WHERE backup_number=#{number})")
+        if (symlinks_not_written == 0)
+            puts("  Status: All symlinks of the fileset are on tapes in the backup set.".color(CC::GREEN))
+        else
+            puts(("  Status: There are #{symlinks_not_written} symlinks not on tape in the backup set.").color(CC::RED))
+        end
 
         fileset_name = db.get_first_value("SELECT name FROM filesets WHERE number=#{fileset_number}")
         puts(("  Fileset #{fileset_name} stores #{fileset_file_sizes.length()} files for a total size of " +
@@ -625,13 +753,13 @@ def summary(db)
             puts(("  Tape #{idx} labeled #{label} with size #{size} " +
                 "[#{full == 1 ? 'FULL' : 'NOT FULL'}]:").color(CC::MAGENTA))
 
-            tarballs = db.execute("SELECT idx, size, files, overhead, written FROM tarballs WHERE " +
+            tarballs = db.execute("SELECT idx, size, files, symlinks, overhead, written FROM tarballs WHERE " +
                 "tape_number=#{tape_number} ORDER BY idx ASC")
             tarballs.each() do |tarball|
-                idx, size, files, overhead, written = tarball
+                idx, size, files, symlinks, overhead, written = tarball
 
-                puts(("    Tarball #{idx} stores #{files} files in #{size} bytes with #{overhead} bytes of " +
-                    "overhead. (Written #{Time.at(written)})").color(CC::YELLOW))
+                puts(("    Tarball #{idx} stores #{files} files and #{symlinks} symlinks in #{size} bytes with " +
+                    "#{overhead} bytes of overhead. (Written #{Time.at(written)})").color(CC::YELLOW))
             end
         end
     end unless (backups.nil?())
@@ -651,6 +779,11 @@ end
 def write(db, args)
     backup_name = args[0]
     device = args[1]
+
+    fake = false
+    if ((args.length() == 3) && (args[2] == '--fake'))
+        fake = true
+    end
 
     # TODO: Validation of arguments.
 
@@ -677,6 +810,7 @@ def write(db, args)
     files_to_write = []
     files_to_consider.each() do |file|
         if (File.exists?(file[1]))
+            puts 'File to write: ' << file[1]
             files_to_write << file
         else
             puts('There are files labeled as on disk that do not exist. Update the fileset first.'.color(CC::RED))
@@ -684,8 +818,27 @@ def write(db, args)
         end
     end
 
-    if (files_to_write.length() == 0)
-        puts('There are no files to be written in this backup set.'.color(CC::GREEN))
+    symlinks_to_consider = db.execute("SELECT number, path FROM symlinks LEFT JOIN symlink_fileset_links ON " +
+        "symlink_fileset_links.symlink_number=symlinks.number WHERE symlink_fileset_links.fileset_number=#{fileset_number} AND " +
+        "on_disk = 1 AND number NOT IN (SELECT symlinks.number FROM symlinks LEFT JOIN symlink_tarball_links ON " +
+        "symlink_tarball_links.symlink_number=symlinks.number LEFT JOIN tarballs ON " +
+        "tarballs.number=symlink_tarball_links.tarball_number LEFT JOIN tapes ON tapes.number=tarballs.tape_number " +
+        "LEFT JOIN backups ON backups.number=tapes.backup_number WHERE backup_number=#{backup_number}) ORDER BY path " +
+        "ASC")
+
+    symlinks_to_write = []
+    symlinks_to_consider.each() do |symlink|
+        if (File.exists?(symlink[1]))
+            puts 'Symlink to write: ' << symlink[1]
+            symlinks_to_write << symlink
+        else
+            puts('There are symlinks labeled as on disk that do not exist. Update the fileset first.'.color(CC::RED))
+            return
+        end
+    end
+
+    if ((files_to_write.length() == 0) && (symlinks_to_write.length() == 0))
+        puts('There are no files or symlinks to be written in this backup set.'.color(CC::GREEN))
         return
     end
 
@@ -700,30 +853,38 @@ def write(db, args)
 
     deleted_files = db.execute("SELECT path FROM files LEFT JOIN file_fileset_links ON file_number=number WHERE " +
         "on_disk=0")
-
+    deleted_symlinks = db.execute("SELECT path FROM symlinks LEFT JOIN symlink_fileset_links ON symlink_number=number WHERE " +
+        "on_disk=0")
+    
     # Set correct blocksize.
     block_size = 8192 * 512 # 4MB blocks.
-    result = `mt-st -f #{device} setblk #{block_size} 2>&1`
-    unless ($?.success?())
-        puts("Could not set blocksize: mt-st error: #{result}".color(CC::RED))
-        return
+    unless (fake == true)
+        result = `mt-st -f #{device} setblk #{block_size} 2>&1`
+        unless ($?.success?())
+            puts("Could not set blocksize: mt-st error: #{result}".color(CC::RED))
+            return
+        end
     end
 
     # Enable compression.
-    result = `mt-st -f #{device} compression 1 2>&1`
-    unless ($?.success?())
-        puts("Could not set enable compression: mt-st error: #{result}".color(CC::RED))
-        return
+    unless (fake == true)
+        result = `mt-st -f #{device} compression 1 2>&1`
+        unless ($?.success?())
+            puts("Could not set enable compression: mt-st error: #{result}".color(CC::RED))
+            return
+        end
     end
 
     puts("Started tape activity at #{Time.now().to_s()}.".color(CC::MAGENTA))
 
     # Advance the tape to the correct file record.
-    if (tarball_index > 0)
-        result = `mt-st -f #{device} fsf #{tarball_index} 2>&1`
-        unless ($?.success?())
-            puts("Could not advance tape to correct file record: mt-st error: #{result}".color(CC::RED))
-            return            
+    unless (fake == true)
+        if (tarball_index > 0)
+            result = `mt-st -f #{device} fsf #{tarball_index} 2>&1`
+            unless ($?.success?())
+                puts("Could not advance tape to correct file record: mt-st error: #{result}".color(CC::RED))
+                return            
+            end
         end
     end
 
@@ -735,6 +896,9 @@ def write(db, args)
 
         deleted_files.each() do |deleted_file|
             deletelist.puts("..#{deleted_file[0]}")
+        end
+        deleted_symlinks.each() do |deleted_symlink|
+            deletelist.puts("..#{deleted_symlink[0]}")
         end
 
         deletelist.puts("\"\nfor file in $files\ndo\n\tif [ -e $file ]\n\tthen\n\t\trm $file\n\tfi\ndone")
@@ -748,6 +912,14 @@ def write(db, args)
         filelist = File.open('filelist.txt', 'wb')
         filelist.puts(deletelist_name.sub(/^\//, ''))
 
+        # Put symlinks first since they will be small.
+        symlinks_to_write.each() do |symlink|
+            relative_filename = symlink[1].sub(/^\//, '')
+
+            filelist.puts(relative_filename)
+        end
+
+        # Then put files.
         files_to_write.each() do |file|
             relative_filename = file[1].sub(/^\//, '')
 
@@ -759,7 +931,7 @@ def write(db, args)
         error = false
         full = false
         bytes_written = 0
-        result = `tar -H pax -b 8192 -cf #{device} -C / -T filelist.txt --totals 2>&1`
+        result = `tar --no-recursion -H pax -b 8192 -cf #{device} -C / -T filelist.txt --totals 2>&1`
         success = $?.success?()
         lines = result.split("\n")
         lines.each() do |line|
@@ -798,10 +970,12 @@ def write(db, args)
     end
 
     # Rewind.
-    result = `mt-st -f #{device} rewind 2>&1`
-    unless ($?.success?())
-        puts("Could not rewind: mt-st error: #{result}".color(CC::RED))
-        return
+    unless (fake == true)
+        result = `mt-st -f #{device} rewind 2>&1`
+        unless ($?.success?())
+            puts("Could not rewind: mt-st error: #{result}".color(CC::RED))
+            return
+        end
     end
 
     puts("Finished tape activity at #{Time.now().to_s()}.".color(CC::MAGENTA))
@@ -813,19 +987,34 @@ def write(db, args)
 
         # Determine how far we got if the tape was full.
         files_written = []
+        symlinks_written = []
         sum = 0
-        files_to_write.each() do |file|
-            size = file[2]
-            ws = (3 * 512) + size + (size % 512)
-            if ((sum + ws) < bytes_written)
-                files_written << file
-                sum += ws
-            else
-                break
+        if (sum < bytes_written)
+            symlinks_to_write.each() do |symlink|
+                ws = 1536
+                if ((sum + ws) < bytes_written)
+                    symlinks_written << file
+                    sum += ws
+                else
+                    break
+                end
+            end
+        end
+        if (sum < bytes_written)
+            files_to_write.each() do |file|
+                size = file[2]
+                ws = (3 * 512) + size + (size % 512)
+                if ((sum + ws) < bytes_written)
+                    files_written << file
+                    sum += ws
+                else
+                    break
+                end
             end
         end
     else
         # If the tape was not full, all files have been written.
+        symlinks_written = symlinks_to_write
         files_written = files_to_write
     end
 
@@ -838,11 +1027,20 @@ def write(db, args)
 
     db.transaction()
 
-    db.execute("INSERT INTO tarballs(tape_number, idx, size, files, overhead, written) VALUES(#{tape_number}, " +
-        "#{tarball_index}, #{file_size}, #{files_written.length()}, #{overhead}, #{Time.now().to_i()})")
+    db.execute("INSERT INTO tarballs(tape_number, idx, size, files, symlinks, overhead, written) VALUES(#{tape_number}, " +
+        "#{tarball_index}, #{file_size}, #{files_written.length()}, #{symlinks_written.length()}, #{overhead}, #{Time.now().to_i()})")
 
     tarball_number = db.get_first_value("SELECT number FROM tarballs WHERE tape_number=#{tape_number} AND " +
         "idx=#{tarball_index}")
+
+    statement = db.prepare("INSERT INTO symlink_tarball_links(symlink_number, tarball_number) VALUES(?, #{tarball_number})")
+    result = nil
+    symlinks_written.each() do |symlink|
+        result = statement.execute(symlink[0])
+    end
+    unless (result.nil?())
+        result.close()
+    end
 
     statement = db.prepare("INSERT INTO file_tarball_links(file_number, tarball_number) VALUES(?, #{tarball_number})")
     result = nil
@@ -861,7 +1059,7 @@ def write(db, args)
 
     puts("Finished write at #{Time.now().to_s()}.".color(CC::MAGENTA))
 
-    puts("Tarball written. #{files_written.length()} files backed up.".color(CC::GREEN))
+    puts("Tarball written. #{files_written.length()} files and #{symlinks_written.length()} symlinks backed up.".color(CC::GREEN))
 end
 
 #----------------------------------------------------------------------------------------------------------------------
@@ -870,13 +1068,19 @@ end
 
 begin
     db = SQLite3::Database.new('bu.db')
+    tool_version = 6
+    db_version_expected = 7
 
     if (db.execute('SELECT name FROM sqlite_master WHERE type="table" AND name="version"').empty?())
         # Create new db.
         db.execute('CREATE TABLE files(number INTEGER PRIMARY KEY, path TEXT NOT NULL, sha1 TEXT NOT NULL, mtime ' +
             'INTEGER NOT NULL, size INTEGER NOT NULL, on_disk INTEGER NOT NULL)')
+        db.execute('CREATE TABLE symlinks(number INTEGER PRIMARY KEY, path TEXT NOT NULL, target TEXT NOT NULL, ' +
+            'on_disk INTEGER NOT NULL)')
         db.execute('CREATE TABLE filesets(number INTEGER PRIMARY KEY, name TEXT NOT NULL)')
         db.execute('CREATE TABLE file_fileset_links(file_number INTEGER NOT NULL, fileset_number INTEGER NOT NULL)')
+        db.execute('CREATE TABLE symlink_fileset_links(symlink_number INTEGER NOT NULL, fileset_number INTEGER NOT ' +
+            'NULL)')
         db.execute('CREATE TABLE backups(number INTEGER PRIMARY KEY, fileset_number INTEGER NOT NULL, name TEXT NOT ' +
             'NULL)')
         db.execute('CREATE TABLE paths(number INTEGER PRIMARY KEY, fileset_number INTEGER NOT NULL, path TEXT NOT ' +
@@ -884,24 +1088,25 @@ begin
         db.execute('CREATE TABLE tapes(number INTEGER PRIMARY KEY, backup_number INTEGER NOT NULL, label TEXT NOT ' +
             'NULL, size INTEGER NOT NULL, full INTEGER NOT NULL, idx INTEGER NOT NULL)')
         db.execute('CREATE TABLE tarballs(number INTEGER PRIMARY KEY, tape_number INTEGER NOT NULL, idx INTEGER NOT ' +
-            'NULL, size INTEGER NOT NULL, files INTEGER NOT NULL, overhead INTEGER NOT NULL, written INTEGER NOT NULL)')
+            'NULL, size INTEGER NOT NULL, files INTEGER NOT NULL, symlinks INTEGER NOT NULL, overhead INTEGER NOT ' +
+            'NULL, written INTEGER NOT NULL)')
         db.execute('CREATE TABLE version(version INTEGER NOT NULL)')
         db.execute('CREATE TABLE file_tarball_links(file_number INTEGER NOT NULL, tarball_number INTEGER NOT NULL)')
-        db.execute('INSERT INTO version(version) values(6)')
+        db.execute('CREATE TABLE symlink_tarball_links(symlink_number INTEGER NOT NULL, tarball_number INTEGER NOT NULL)')
+        db.execute("INSERT INTO version(version) values(#{db_version_expected})")
 
         puts('New database created.'.color(CC::YELLOW))
-        version = 5
     else
         # Check db version.
-        version = db.get_first_value('SELECT version FROM version;')
-        if (version != 6)
+        db_version = db.get_first_value('SELECT version FROM version;')
+        if (db_version != db_version_expected)
             puts('Incompatible database version'.color(CC::RED))
             exit(-1)
         end
     end
 
-    puts("Backuptool [tool V5, database V#{version}]".color(CC::CYAN))
-    puts("  Copyright 2018-2020 Erik Van Hamme (erik.vanhamme@gmail.com)".color(CC::CYAN))
+    puts("Backuptool [tool V#{tool_version}, database V#{db_version_expected}]".color(CC::CYAN))
+    puts("  Copyright 2018-2021 Erik Van Hamme (erik.vanhamme@gmail.com)".color(CC::CYAN))
 
     args = ARGV
 
